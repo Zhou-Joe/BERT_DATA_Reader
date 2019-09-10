@@ -82,6 +82,7 @@ class OverlayData:
         self.rawdata=pd.read_table(path,header=None,skiprows=[0,1,2,3,4,5])
         self.rawdata.columns=['time','x','y','z']
         self.get_offset()
+        self.filename = path
         
     def from_lap(self,data):
         self.rawdata=pd.DataFrame(data.iloc[5:,:].values)
@@ -96,11 +97,16 @@ class OverlayData:
         
 
 class AccData:
-    def __init__(self,path):
-        self.path=path
-        self.pathfolder=Path(path).resolve().parent
-        self.rawdata=pd.read_table(path,header=None,skiprows=[0]).iloc[:,0:6]
-        if self.rawdata.shape[1]<=5:
+    def __init__(self,path, filefolder=None):
+        try:
+            self.path=path
+            self.pathfolder=Path(path).resolve().parent
+            self.rawdata=pd.read_table(path,header=None,skiprows=[0]).iloc[:,0:6]
+        except:
+            self.rawdata=path
+            self.path=Path(filefolder).resolve().parent
+            self.pathfolder=self.path
+        if  self.rawdata.shape[1]<=5:
             self.rawdata.drop([0,1,2,3,4],inplace=True)
             self.rawdata.drop(0,axis=1,inplace=True)
             self.rawdata.reset_index(drop=True,inplace=True)
@@ -173,8 +179,8 @@ class AccData:
             
     def writefile(self,fname):
         for i in range (self.laps):
-            pathstrA=str(self.pathfolder)+'/'+fname+'_ASTM_Lap'+str(i+1)+'.txt'
-            pathstrG=str(self.pathfolder)+'/'+fname+'_GB_Lap'+str(i+1)+'.txt'
+            pathstrA=str(self.pathfolder)+'/'+fname+'_ASTM_Lap'+str(i+1)+'.sup'
+            pathstrG=str(self.pathfolder)+'/'+fname+'_GB_Lap'+str(i+1)+'.sup'
             self.ASTMdata_t[i].to_csv(pathstrA,sep='\t',header=False,index=False)
             self.GBdata_t[i].to_csv(pathstrG,sep='\t',header=False,index=False)
    
@@ -182,14 +188,7 @@ class AccData:
 
     
     
-    
-        
-    
-    
-    
-    
-    
-    
+
     
     
     
@@ -523,7 +522,7 @@ class gui(tk.Tk):
         self.status.pack(side=tk.LEFT,anchor='w')
         self.path=tk.Label(bottom,text='',bg='pink1',anchor='e')
         self.path.pack(side=tk.RIGHT,anchor='e')
-        self.about='\nVersion 2.00\nDeveloped by Python 3\nRide and Show Engineering\nShanghai Disney Resort'
+        self.about='\nVersion 2.1\n1. Export file to sup format\n2. Added NewtonViewer Transformer Function\n\nDeveloped by Python 3\nRide and Show Engineering\nShanghai Disney Resort'
         menubar = tk.Menu(self)
         filemenu = tk.Menu(menubar, tearoff=0)
         filemenu.add_command(label="Open File", command = lambda: self.OpenandPreview())
@@ -531,7 +530,12 @@ class gui(tk.Tk):
         filemenu.add_command(label="Cut Data by Laps", command=lambda: self.DataCut())
         filemenu.add_command(label="Export Cut Data", command=lambda: self.SaveData())
         filemenu.add_separator()
+        filemenu.add_command(label="NewtonViewer Transformer", command=lambda: self.newtonviewer_helper())
+        filemenu.add_separator()
         filemenu.add_command(label="Exit", command=lambda: self.destroy())
+
+
+
         menubar.add_cascade(label="File", menu=filemenu)
         
         overlaymenu = tk.Menu(menubar,tearoff=0)
@@ -548,8 +552,10 @@ class gui(tk.Tk):
         stdlaymenu.add_command(label="Plot Acceleration Zones",command = lambda: self.AccZone())
         stdlaymenu.add_separator()
         stdlaymenu.add_command(label="View ASTM Compliance", command = lambda: self.GenerateASTM())
-        menubar.add_cascade(label="Standards", menu=stdlaymenu)        
-        
+        menubar.add_cascade(label="Standards", menu=stdlaymenu)
+
+
+
         aboutmenu = tk.Menu(menubar,tearoff=0)
         aboutmenu.add_command(label="Readme", command = lambda: popupmsg(readme,'Readme'))
         aboutmenu.add_separator()
@@ -802,13 +808,20 @@ class gui(tk.Tk):
         
         
         
-        
-        
-        
-        
-        
-        
-        
+    def newtonviewer_helper(self):
+        filename = filedialog.askopenfilename(filetypes=(('RawData', '*.txt'), ('All files', '*.*')))
+        data=pd.read_table(filename)
+        cols = data.shape[1]
+        iter = int(cols/6)
+        for i in range(iter):
+            accdata=AccData(path=data.iloc[:,i*6:i*6+6],filefolder=filename)
+            accdata.datasep(0)
+            accdata.addtitle()
+            fname='test iter'+str(i+1)
+            accdata.writefile(fname)
+        popupmsg('Done', 'Message')
+
+
 
     def RemoveOverlay(self):
         self.hasoverlay=False
@@ -1010,7 +1023,10 @@ class gui(tk.Tk):
         f.tight_layout()
         self.canvas.draw()
         self.status.config(text='Data filtered with LPF: ' +str(self.cutoff) +'Hz')
-        self.path.config(text='Current File on Display: '+self.filename)
+        if self.hasoverlay:
+            self.path.config(text='Current File on Display: '+self.filename+'\nOverlay File name: '+self.overlaydata.filename)
+        else:
+            self.path.config(text='Current File on Display: ' + self.filename)
         self.lbxmax.config(text=str(np.round(np.max(x),4)))
         self.lbxmin.config(text=str(np.round(np.min(x),4)))
         self.lbymax.config(text=str(np.round(np.max(y),4)))
@@ -1432,11 +1448,3 @@ class gui(tk.Tk):
         
 main=gui()
 main.mainloop()
-        
-        
-        
-        
-        
-        
-        
-

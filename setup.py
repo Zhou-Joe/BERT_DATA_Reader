@@ -40,8 +40,8 @@ options = {
 cx_Freeze.setup(
     name = "Bert Data Reader",
     options = {"build_exe": {"packages":["tkinter","pandas", "scipy","numpy", "os","sys","matplotlib.backends.backend_tkagg","matplotlib.figure","matplotlib.pyplot","scipy.signal","scipy.spatial"]}},
-    version = "2.0",
-    description = "Bert Data Reader (MultipleProcessing)",
+    version = "2.1",
+    description = "Bert Data Reader",
     executables = executables
 )
 
