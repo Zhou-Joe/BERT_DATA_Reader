@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0EA5E9"/>
+      <stop offset="100%" stop-color="#0369A1"/>
+    </linearGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="100%" stop-color="#E0F2FE"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded-square background -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="url(#bg)"/>
+
+  <!-- Acceleration waveform (the chart motif) behind the B -->
+  <path d="M 28 150 Q 60 95 92 150 T 156 150 T 228 150"
+        fill="none" stroke="url(#wave)" stroke-width="8"
+        stroke-linecap="round" opacity="0.55"/>
+  <path d="M 28 175 Q 55 130 82 175 T 142 175 T 228 175"
+        fill="none" stroke="#38BDF8" stroke-width="6"
+        stroke-linecap="round" opacity="0.4"/>
+
+  <!-- Baseline (time axis) -->
+  <line x1="28" y1="120" x2="228" y2="120"
+        stroke="#BAE6FD" stroke-width="3" opacity="0.5"/>
+
+  <!-- The "B" mark (BERT) — drawn as a vector path, NOT <text>, so it renders
+       everywhere (Qt's QSvgRenderer drops/fails on <text> in minimal envs). -->
+  <!-- Two vertical bars of the B (left stem) + two lobes. A bold blocky "B". -->
+  <path fill="#FFFFFF" d="
+    M 78 54
+    L 132 54
+    Q 158 54 158 76
+    Q 158 92 142 98
+    Q 168 102 168 128
+    Q 168 156 138 156
+    L 78 156
+    Z
+    M 102 76
+    L 102 92
+    L 128 92
+    Q 134 92 134 84
+    Q 134 76 128 76
+    Z
+    M 102 114
+    L 102 134
+    L 130 134
+    Q 138 134 138 124
+    Q 138 114 130 114
+    Z
+  "/>
+
+  <!-- "X" badge (BERT_READER X) — bottom-right corner accent.
+       The X is drawn as two crossed bars (vector), not text. -->
+  <circle cx="196" cy="196" r="34" fill="#F59E0B" stroke="#FFFFFF" stroke-width="5"/>
+  <path fill="#FFFFFF" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" d="
+    M 180 182 L 190 182 L 196 190 L 202 182 L 212 182
+    L 202 196 L 212 210 L 202 210 L 196 202 L 190 210 L 180 210
+    L 190 196 Z
+  "/>
+</svg>
