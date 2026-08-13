@@ -3,11 +3,11 @@
 A desktop application for **child-restraint (CR) crash-test acceleration data
 analysis**, built for reviewing SARC-style (`.sup`), tab-separated, and DAQ-CSV
 acceleration recordings against the key injury criteria in
-**ASTM F2135 / FMVSS 213 / GB 27812** style standards.
+**ASTM F2137 / GB 8408** style standards.
 
 BERT_READER X turns raw tri-axial accelerometer logs into the seven analysis
 views a CR test engineer actually uses day-to-day: time-history trends,
-ASTM Sustained + Egg-crate limit checks, GB-27812 contour, Acceleration Zone
+ASTM Sustained + Egg-crate limit checks, GB-8408 contour, Acceleration Zone
 classification, and Z / X-Y reversal signature detection — with one-click batch
 export and a Word failure report.
 
@@ -23,7 +23,7 @@ export and a Word failure report.
     pass/fail limit overlays (restraint / condition / height / prone aware).
   - **ASTM Egg** — X-Y / X-Z / Y-Z "egg-crate" boundary plots with the new
     **prone posture** egg shapes and sustained ax− override.
-  - **GB Contour** — GB-27812-style contour, Y-axis ±3.5 g default.
+  - **GB Contour** — GB-8408-style contour, Y-axis ±3.5 g default.
   - **Acceleration Zone** — automatic zone classification with click-to-read.
   - **Z Reversal** — detects the down-then-up acceleration-reversal signature.
   - **X/Y Reversal** — X vs Y hysteresis with per-axis allowance checks.
@@ -179,7 +179,7 @@ BERT_READER/
 ├── chart_base.py           # QChartView base + shared toolbars
 ├── chart_trend.py          # Trend (synced X-axis time history)
 ├── chart_astm.py           # ASTM Sustained + Egg canvases
-├── chart_gb.py             # GB-27812 contour
+├── chart_gb.py             # GB-8408 contour
 ├── chart_acczone.py        # Acceleration Zone classification
 ├── chart_reversal.py       # Z + X/Y reversal
 ├── chart_legend.py         # legend widgets
