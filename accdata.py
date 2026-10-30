@@ -91,18 +91,24 @@ class AccData:
 
     def get_angle(self):
         for i in range(10):
+            raw_line = None
             try:
-                if "Initial Pitch Angle: " in str(self.rawdata.iloc[i, 0]):
-                    self.pitch_angle = int(re.sub(r"Initial Pitch Angle: ", '', self.rawdata.iloc[i, 0]))
-                elif "Seatback Angle: " in str(self.rawdata.iloc[i, 0]):
-                    self.seatback_angle = int(re.sub(r"Seatback Angle: ", '', self.rawdata.iloc[i, 0]))
+                raw_line = self.rawdata.iloc[i, 0]
+                # 角度用 float 解析：int() 遇 '5.0' 等浮点格式会抛 ValueError
+                # 被下面 except 吞掉，角度静默保持 0，零位点与 std_data 偏移
+                # 随之全错。reformat 导出用 '{}' 格式化，本就兼容浮点。
+                if "Initial Pitch Angle: " in str(raw_line):
+                    self.pitch_angle = float(re.sub(r"Initial Pitch Angle: ", '', raw_line))
+                elif "Seatback Angle: " in str(raw_line):
+                    self.seatback_angle = float(re.sub(r"Seatback Angle: ", '', raw_line))
 
-                elif "Initial Roll Angle: " in str(self.rawdata.iloc[i, 0]):
-                    self.roll_angle = int(re.sub(r"Initial Roll Angle: ", '', self.rawdata.iloc[i, 0]))
-                elif "Initial Yaw Angle: " in str(self.rawdata.iloc[i, 0]):
-                    self.yaw_angle = int(re.sub(r"Initial Yaw Angle: ", '', self.rawdata.iloc[i, 0]))
+                elif "Initial Roll Angle: " in str(raw_line):
+                    self.roll_angle = float(re.sub(r"Initial Roll Angle: ", '', raw_line))
+                elif "Initial Yaw Angle: " in str(raw_line):
+                    self.yaw_angle = float(re.sub(r"Initial Yaw Angle: ", '', raw_line))
             except Exception as e:
-                print (e)
+                # 附上原始行内容，便于定位是哪一行、什么格式导致解析失败。
+                print(f"Angle parse error at header row {i} ({raw_line!r}): {e}")
 
     def get_offset(self):
         [self.zero_x, self.zero_y, self.zero_z] = coordTransform(self.pitch_angle, self.seatback_angle, self.roll_angle, self.yaw_angle)
@@ -176,16 +182,24 @@ class AccData:
     def get_colID(self, column_str=None):
         try:
             self.column_row_content = re.sub(r'SARCcolumnIDs: ', "", self.rawdata.iloc[self.col_idx, 0])
-            self.columns = re.sub(r'SARCcolumnIDs: ', '', self.rawdata.iloc[self.col_idx, 0]).split(' ')
+            # 按任意空白拆分并自动去空项：旧 .split(' ') 遇 'Time  X'（连续
+            # 空格）会产生空串列名，各通道取错列/首列被覆盖。
+            self.columns = re.sub(r'SARCcolumnIDs: ', '', self.rawdata.iloc[self.col_idx, 0]).split()
         except Exception as e:
             print (e)
 
     def set_colID(self, column_str):
         self.column_row_content = column_str
-        self.columns = self.column_row_content.split(' ')
+        self.columns = self.column_row_content.split()
         self.data.columns = self.columns
 
     def parsie_cols(self):
+        # 表头/数据列数一致性校验：列数不符或列名含空串时，旧代码会在下面
+        # iloc 取列处抛晦涩的 IndexError；这里提前抛带数字的 ValueError，
+        # 由 open_accel_data 的状态栏错误提示直接承接展示。
+        if len(self.columns) > self.rawdata.shape[1] or "" in self.columns:
+            raise ValueError(
+                f"表头列数({len(self.columns)})与数据列数({self.rawdata.shape[1]})不符")
         self.data = pd.DataFrame()
         for i in range(len(self.columns)):
             self.data[self.columns[i]] = self.rawdata.iloc[self.start_idx:, i]
@@ -378,21 +392,22 @@ class AccData:
         return str_info
 
     def export_to_file(self, path):
-        try:
-            self.reformat(overwrite=True, setting_angle=False)
-            self.rawdata.to_csv(path, sep='\t', header=False, index=False)
-        except:
-            pass
+        # 不再用裸 except 吞掉写盘异常：调用方（ExportDialog /
+        # _export_all_to_sup）都在 try 内接住并计数/提示，让失败可见。
+        self.reformat(overwrite=True, setting_angle=False)
+        self.rawdata.to_csv(path, sep='\t', header=False, index=False)
 
     def export_filter(self, path, plottype):
-        try:
-            if plottype == 'Standard':
-                self.std_data.to_csv(path, sep='\t', header=False, index=False)
+        # 同上：异常向上抛。plottype=='Raw'（顶栏 Raw Data 视图）此前两个分支
+        # 都不命中、什么都不写却报成功，现在导出原始 self.data 帧。
+        if plottype == 'Standard':
+            self.std_data.to_csv(path, sep='\t', header=False, index=False)
 
-            elif plottype == 'Filter':
-                self.filtered_data.to_csv(path, sep='\t', header=False, index=False)
-        except:
-            pass
+        elif plottype == 'Filter':
+            self.filtered_data.to_csv(path, sep='\t', header=False, index=False)
+
+        elif plottype == 'Raw':
+            self.data.to_csv(path, sep='\t', header=False, index=False)
 
 def _csv_first_data_row(path: str, max_scan: int = 200) -> int:
     """Return the 0-based index of the first all-numeric CSV row.
@@ -453,7 +468,10 @@ class RawData:
             self.detect_columns(path)
             self.init_data()
         except Exception as e:
-            print (e)
+            # 加载失败必须向上抛：只 print 时对象停留在半初始化状态
+            # （GB_data/ASTM_data 缺失），调用方随后调 export_data() 会抛出
+            # 更晦涩的 AttributeError；且打包版 console=False 下 print 不可见。
+            raise RuntimeError(f"无法解析原始数据文件 {path}: {e}") from e
 
     def detect_columns(self, path):
         """Detect which columns belong to GB and ASTM by reading the file header."""

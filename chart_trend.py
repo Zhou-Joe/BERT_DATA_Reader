@@ -48,7 +48,10 @@ class _SubChart(PanChartView):
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
 
         self._axis_y = QValueAxis()
-        self._axis_y.setTitleText(y_label)
+        # Remember the label: clear_all() rebuilds _axis_y and must restore it
+        # (a fresh QValueAxis carries no title).
+        self._y_label = y_label
+        self._axis_y.setTitleText(self._y_label)
         self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
 
         self.setChart(self._chart)
@@ -119,6 +122,8 @@ class _SubChart(PanChartView):
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
 
         self._axis_y = QValueAxis()
+        # Restore the Y-axis title lost with the previous axis object.
+        self._axis_y.setTitleText(self._y_label)
         self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
 
         # clear_chart() rebuilt the axes, so the rangeChanged connections from
@@ -610,9 +615,14 @@ class TrendChartView(QWidget):
     # ------------------------------------------------------------------
 
     def initplotxyz(self) -> None:
-        """Clear all charts and series.  Does NOT reconnect the sync signal."""
+        """Clear all charts and series.  Re-wires the X-axis sync (below)."""
         for sub in (self._chart_x, self._chart_y, self._chart_z):
             sub.clear_all()
+            # clear_all() rebuilt axis_x, so the _sync_x_axis connection made
+            # in __init__ died with the discarded axis object. Re-wire it so
+            # the three time axes stay linked after every re-plot (each
+            # clear_all makes a fresh axis, so this never double-connects).
+            sub.axis_x.rangeChanged.connect(self._sync_x_axis)
             # Recreate the sub-chart's viewport so no stale pixels from the
             # previous (populated) chart linger — a reset must look exactly like
             # the app's initial state.
@@ -622,7 +632,6 @@ class TrendChartView(QWidget):
         self._data_by_dataset.clear()
         self._analysis_by_dataset.clear()
         self._analysis_active = False
-        # NOTE: rangeChanged stays connected from __init__; no reconnect here.
 
     def addplotxyz(self, list_data, plot_order: int, color: str = "b") -> None:
         """Add a 3-axis data series from a pandas DataFrame.
@@ -643,6 +652,15 @@ class TrendChartView(QWidget):
             self._series_list.append(s)
         self._series_by_dataset[plot_order] = [sx, sy, sz]
         self._cache_analysis_data(list_data, plot_order, offset=0.0)
+        # Fit axes tightly so the post-import default view equals Reset View.
+        # Without an explicit range the axes fall to Qt Charts' nice-number
+        # auto-domain (loose padding, per-chart tick granularity), which makes
+        # small-span sub-charts (e.g. Vertical ≈1 g) look squashed while
+        # large-span ones look full — the "weird proportions on import" that
+        # a manual Reset View used to fix. Re-fitting on every add also covers
+        # multi-dataset loads: the last fit spans the cumulative data.
+        for sub in (self._chart_x, self._chart_y, self._chart_z):
+            sub.fit_data()
 
     def addplotxyz_shifted(self, list_data, plot_order: int,
                            offset_seconds, color: str = "b") -> None:

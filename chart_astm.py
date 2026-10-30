@@ -356,10 +356,7 @@ class ASTMChartView(QWidget):
         downASTM = np.array([6, 6, 6, 4, 4, 3, 3, 2, 2])
 
         ht = float(height)
-        if cond == 'E-Stop' or cond == 'Expected/Permitted Bumping':
-            cond_mult = 1.25
-        else:
-            cond_mult = 1.0
+        cond_mult = ASTMChartView._cond_mult(cond)
 
         coefX = cond_mult * coef(ht, 'x')
         coefZ = cond_mult * coef(ht, 'z')
@@ -443,6 +440,10 @@ class ASTMChartView(QWidget):
         (_restraint_limit_axes) uses — so the drawn red lines and the limit
         check can never drift apart.
 
+        ``restraint`` 'None' draws NO restraint limit lines: the Analyze check
+        falls back to the ASTM base limit (_astm_limit_axes), so a "None" copy
+        of the restraint lines here would show limits the check never uses.
+
         ``prone`` overrides ONLY the ax− restraint line (with
         _PRONE_RESTR_AXNEG), regardless of restraint type; every other limit
         and the restraint eggs are unchanged.
@@ -509,32 +510,36 @@ class ASTMChartView(QWidget):
             self._add_ref_line("xz", xbb, 1 + ybb, f"{restraint} (0.2s)", pen_dash)
             self._add_ref_line("yz", xc, 1 + yc, f"{restraint} (0s)", pen_solid)
             self._add_ref_line("yz", xcc, 1 + ycc, f"{restraint} (0.2s)", pen_dash)
-        # 'None' (else): no egg curves, only the height-scaled base lines below.
+        # 'None' (else): no egg curves and no restraint limit lines — the
+        # Analyze check falls back to _astm_limit_axes (the base ASTM lines
+        # already drawn by _add_reference_curves), so drawing a "None" copy
+        # here would show limits the check never uses.
 
-        # Restraint limit values via the shared helper (single source of truth).
-        a31, a32, a33, a34, a35 = self._restraint_arrays(restraint, coefX, coefZ)
-
-        # Restraint-specific limit lines on ax/ay/az. In prone posture the ax−
-        # restraint line is overridden by the prone curve regardless of the
+        # Restraint-specific limit lines on ax/ay/az, via the shared helper
+        # (single source of truth with the Analyze check). In prone posture the
+        # ax− restraint line is overridden by the prone curve regardless of the
         # selected restraint type (see _PRONE_RESTR_AXNEG).
-        if prone:
-            self._add_ref_line("ax", *self._PRONE_RESTR_AXNEG,
-                                f"{restraint}", QPen(QColor("red"), 2))
-        else:
-            self._add_ref_line("ax", [0, 0.2, 0.5, 14], a31.tolist(),
-                                f"{restraint}", QPen(QColor("red"), 2))
-        self._add_ref_line("ax",
-            [0, 0.2, 1, 2, 4, 5, 11.8, 12, 14], a32.tolist(),
-            "", QPen(QColor("red"), 2))
-        self._add_ref_line("ay",
-            [0, 0.2, 1, 2, 14], a33.tolist(),
-            f"{restraint}", QPen(QColor("red"), 2))
-        self._add_ref_line("az",
-            [0, 0.2, 0.5, 4, 7, 14], a34.tolist(),
-            "", QPen(QColor("red"), 2))
-        self._add_ref_line("az",
-            [0, 0.2, 1, 2, 4, 5, 11.8, 12, 14], a35.tolist(),
-            f"{restraint}", QPen(QColor("red"), 2))
+        if restraint != 'None':
+            a31, a32, a33, a34, a35 = self._restraint_arrays(
+                restraint, coefX, coefZ)
+            if prone:
+                self._add_ref_line("ax", *self._PRONE_RESTR_AXNEG,
+                                    f"{restraint}", QPen(QColor("red"), 2))
+            else:
+                self._add_ref_line("ax", [0, 0.2, 0.5, 14], a31.tolist(),
+                                    f"{restraint}", QPen(QColor("red"), 2))
+            self._add_ref_line("ax",
+                [0, 0.2, 1, 2, 4, 5, 11.8, 12, 14], a32.tolist(),
+                "", QPen(QColor("red"), 2))
+            self._add_ref_line("ay",
+                [0, 0.2, 1, 2, 14], a33.tolist(),
+                f"{restraint}", QPen(QColor("red"), 2))
+            self._add_ref_line("az",
+                [0, 0.2, 0.5, 4, 7, 14], a34.tolist(),
+                "", QPen(QColor("red"), 2))
+            self._add_ref_line("az",
+                [0, 0.2, 1, 2, 4, 5, 11.8, 12, 14], a35.tolist(),
+                f"{restraint}", QPen(QColor("red"), 2))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -849,7 +854,7 @@ class ASTMChartView(QWidget):
             'az': {
                 # az− : [-2,-1.5,-1.5,-1.2,-1.2]*c over [0.2,0.5,4,7,14]
                 'neg': ([0.2, 0.5, 4, 7, 14],
-                        (np.array([-2, -1.5, -1.5, -1.2, -1.2])).tolist()),
+                        (np.array([-2, -1.5, -1.5, -1.2, -1.2]) * c).tolist()),
                 # az+ : [6,6,4,4,3,3,2,2]*c over [0.2,1,2,4,5,11.8,12,14]
                 'pos': ([0.2, 1, 2, 4, 5, 11.8, 12, 14],
                         (np.array([6, 6, 4, 4, 3, 3, 2, 2]) * c).tolist()),
@@ -885,9 +890,11 @@ class ASTMChartView(QWidget):
         _add_restraint_curves (drawing) and _restraint_limit_axes (Analyze),
         so the drawn red lines and the limit check can never drift apart.
 
-        ``restraint`` 'None' returns the height-scaled ASTM base arrays (the
-        ``else`` branch of _add_restraint_curves). For real restraint types it
-        returns the tighter per-restraint min/max envelopes.
+        ``restraint`` 'None' returns the height-scaled ASTM base arrays (kept
+        as a defensive fallback — both callers now guard against 'None':
+        _add_restraint_curves skips the restraint lines, and the Analyze check
+        uses _astm_limit_axes instead). For real restraint types it returns
+        the tighter per-restraint min/max envelopes.
         Returns (a31, a32, a33, a34, a35) as numpy arrays.
         """
         frontASTM = np.array([-2, -2, -1.5, -1.5])
@@ -935,8 +942,18 @@ class ASTMChartView(QWidget):
         return a31, a32, a33, a34, a35
 
     @staticmethod
+    def _cond_mult(cond: str) -> float:
+        """Condition multiplier applied to the restraint limits.
+
+        1.25 for 'E-Stop' / 'Expected/Permitted Bumping', else 1.0 — the same
+        factor _add_reference_curves applies when drawing the restraint red
+        lines (cond_mult * coefX/coefZ), so the Analyze check scales with it.
+        """
+        return 1.25 if cond in ('E-Stop', 'Expected/Permitted Bumping') else 1.0
+
+    @staticmethod
     def _restraint_limit_axes(restraint: str, height: float,
-                              prone: bool = False):
+                              cond: str = 'Normal', prone: bool = False):
         """Build the limit curves for the Analyze check, restraint-aware.
 
         For real restraint types ('No Restraint', 'Upper Body', ...) the limit
@@ -944,16 +961,21 @@ class ASTMChartView(QWidget):
         IS checked. For 'None' the limit is the ASTM base, which starts at 0.2s,
         so callers must skip 0–0.2s (see toggle_sust_analysis).
 
+        ``cond`` applies the same condition multiplier as the drawn restraint
+        lines (1.25 for 'E-Stop' / 'Expected/Permitted Bumping', see
+        _cond_mult), so the check can never disagree with the red lines.
+
         Returns a dict shaped like _astm_limit_axes: axis -> {'pos'/'neg':
-        (dts, values)}. Note az's neg side is NOT height-scaled (matches the
-        drawn red line + _astm_limit_axes).
+        (dts, values)}. All five limit arrays are height- and condition-scaled
+        via _restraint_arrays (coefX/coefZ), matching the drawn red lines —
+        including az's neg side (a34).
 
         ``prone`` overrides the ax− curve with the prone restraint limit
         (_PRONE_RESTR_AXNEG), regardless of the selected restraint type —
         matching the line _add_restraint_curves draws.
         """
-        coefX = coef(float(height), 'x')
-        coefZ = coef(float(height), 'z')
+        coefX = ASTMChartView._cond_mult(cond) * coef(float(height), 'x')
+        coefZ = ASTMChartView._cond_mult(cond) * coef(float(height), 'z')
         a31, a32, a33, a34, a35 = ASTMChartView._restraint_arrays(
             restraint, coefX, coefZ)
         dt = ASTMChartView._RESTR_DT
@@ -1027,7 +1049,9 @@ class ASTMChartView(QWidget):
         Limit selection (matches the red lines drawn by _add_restraint_curves):
           • Real restraint types ('No Restraint', 'Upper Body', ...) → the
             restraint-specific limit, which starts at dt=0, so the 0–0.2s range
-            IS checked (restraint rules apply from t=0).
+            IS checked (restraint rules apply from t=0). ``cond`` scales this
+            limit by _cond_mult (1.25 for 'E-Stop' / 'Expected/Permitted
+            Bumping'), exactly like the drawn restraint red lines.
           • 'None' → the ASTM base limit, which only starts at dt=0.2s, so the
             0–0.2s range is NOT checked (no ASTM requirement below 0.2s).
         dt > 14s is always off-chart / ignored.
@@ -1045,7 +1069,7 @@ class ASTMChartView(QWidget):
         # 'None' = no restraint selected → ASTM base limit (starts at 0.2s).
         # Any real restraint type → restraint limit (starts at 0).
         is_restraint = restraint != 'None'
-        limits = (self._restraint_limit_axes(restraint, height, prone)
+        limits = (self._restraint_limit_axes(restraint, height, cond, prone)
                   if is_restraint
                   else self._astm_limit_axes(height, prone))
         for s in self._data_series:

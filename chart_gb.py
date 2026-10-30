@@ -289,18 +289,18 @@ class GBChartView(QWidget):
         # ay chart
         s = self._add_data(self._chart_ay, self._ax_ay_x, self._ax_ay_y,
                             x_gb, p1, "Measured ay (+)", measured_pos)
-        s.clicked.connect(lambda pt: self._on_click(pt))
+        s.clicked.connect(self._on_click)
         s = self._add_data(self._chart_ay, self._ax_ay_x, self._ax_ay_y,
                             x_gb, p2, "Measured ay (-)", measured_neg)
-        s.clicked.connect(lambda pt: self._on_click(pt))
+        s.clicked.connect(self._on_click)
 
         # az chart
         s = self._add_data(self._chart_az, self._ax_az_x, self._ax_az_y,
                             x_gb, p3, "Measured az (+)", measured_pos)
-        s.clicked.connect(lambda pt: self._on_click(pt))
+        s.clicked.connect(self._on_click)
         s = self._add_data(self._chart_az, self._ax_az_x, self._ax_az_y,
                             x_gb, p4, "Measured az (-)", measured_neg)
-        s.clicked.connect(lambda pt: self._on_click(pt))
+        s.clicked.connect(self._on_click)
 
         # Combined chart — scatter overlay
         z_arr = data.iloc[:, 3].values

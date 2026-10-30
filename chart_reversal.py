@@ -833,6 +833,10 @@ class _ReversalContainerBase(QWidget):
 
     def plot_data(self, data_df, color: str, fs: float) -> None:
         """Plot the acceleration curve(s) + cache source arrays for analysis."""
+        # Remember whether analysis overlays were ON so a Generate/Update or
+        # cutoff-change re-plot can restore them (mirrors chart_acczone's
+        # "if self._analysis_active: self._apply_analysis()" pattern).
+        prev_active = self._analysis_active
         # Remove the previous measured curve(s) + any analysis overlays so a
         # re-plot starts clean (no stacking).
         self._remove_data_series()
@@ -842,6 +846,10 @@ class _ReversalContainerBase(QWidget):
         self.event_count = 0
         self.fail_count = 0
         self._plot_curve(data_df, color, fs)
+        # Re-draw the overlays on the fresh curve if they were on before the
+        # re-plot (the shared Analyze button stays pressed — don't drop them).
+        if prev_active:
+            self.toggle_analysis(True)
 
     def toggle_analysis(self, active: bool) -> None:
         """Show or hide reversal overlays on every sub-chart."""

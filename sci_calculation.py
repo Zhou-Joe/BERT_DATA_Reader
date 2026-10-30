@@ -114,7 +114,9 @@ def ProcessGB(data, dt):
     # is empty and np.max([]) raises ValueError. Fall back to the axis floor
     # (y floor 0, z floor 1).
     _yp_vals = pd.Series(y_array).rolling(dt).min().dropna().tolist()
-    yp = round(np.max(_yp_vals), 4) if _yp_vals else 0
+    # 与被注释的原实现一致：+持续加速度钳制到轴下限（ay 下限 0），跨零振荡
+    # 的大窗口不再报出负值（同 ProcessASTM 的 np.maximum(rmin, 0) 修复）。
+    yp = round(max(np.max(_yp_vals), 0), 4) if _yp_vals else 0
 
 
     lsty2 = pd.Series(y_array).rolling(dt).max().dropna()
@@ -127,7 +129,8 @@ def ProcessGB(data, dt):
         yn = 0
 
     _zp_vals = pd.Series(z_array).rolling(dt).min().dropna().tolist()
-    zp = round(np.max(_zp_vals), 4) if _zp_vals else 1
+    # az 下限为 1（1g 重力偏置），与原实现 max(min(...), 1) 一致。
+    zp = round(max(np.max(_zp_vals), 1), 4) if _zp_vals else 1
     lstz2 = (pd.Series(z_array) - 1).rolling(dt).max().dropna()
     lstz2 = lstz2[(lstz2 < 0)]
     if len(lstz2) > 0:

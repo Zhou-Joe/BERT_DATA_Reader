@@ -2207,7 +2207,8 @@ class MainWindow(BertFluentWindow):
 
     def open_accel_data(self) -> None:
         fileName, _ = QFileDialog.getOpenFileName(
-            self, "Open Acceleration Data File", self._last_open_dir, "All Files (*)"
+            self, "Open Acceleration Data File", self._last_open_dir,
+            "Supported data (*.sup *.sups *.txt *.csv *.dat);;All Files (*)"
         )
         if fileName:
             # Remember this file's folder for the next open dialog.
@@ -2227,7 +2228,8 @@ class MainWindow(BertFluentWindow):
 
     def open_raw_data(self) -> None:
         fileName, _ = QFileDialog.getOpenFileName(
-            self, "Open Raw Data File", self._last_open_dir, "All Files (*)"
+            self, "Open Raw Data File", self._last_open_dir,
+            "Supported data (*.sup *.sups *.txt *.csv *.dat);;All Files (*)"
         )
         if fileName:
             # Remember this file's folder for the next open dialog.
@@ -2252,6 +2254,10 @@ class MainWindow(BertFluentWindow):
                     f"Loaded raw: {os.path.basename(fileName)}", 4000)
             except Exception as e:
                 print(f"Open raw error: {e}")
+                # 与 open_accel_data 对齐：打包版无控制台，print 用户看不到，
+                # 必须在状态栏给出带文件名的错误提示。
+                self.statusBar().showMessage(
+                    f"Error: {os.path.basename(fileName)}: {e}", 6000)
 
     def _export_all_to_sup(self) -> None:
         """Export every loaded dataset to a .sup file in one go.
@@ -2278,6 +2284,7 @@ class MainWindow(BertFluentWindow):
             return re.sub(r'[<>:"/\\|?*]', '_', stem).strip() or "dataset"
 
         count = 0
+        failed = []  # export_to_file 不再吞异常，这里收集失败文件名一并展示
         for d in self.datalist:
             stem = _safe_stem(d.filename)
             path = os.path.join(out_dir, stem + ".sup")
@@ -2285,10 +2292,16 @@ class MainWindow(BertFluentWindow):
                 d.export_to_file(path=path)
                 count += 1
             except Exception as e:
+                failed.append(d.filename)
                 print(f"Export error ({d.filename}): {e}")
-        self.statusBar().showMessage(
-            f"Exported {count}/{len(self.datalist)} dataset(s) to {out_dir}",
-            5000)
+        if failed:
+            self.statusBar().showMessage(
+                f"Exported {count}/{len(self.datalist)}; failed: "
+                f"{', '.join(failed)}", 8000)
+        else:
+            self.statusBar().showMessage(
+                f"Exported {count}/{len(self.datalist)} dataset(s) to {out_dir}",
+                5000)
 
     # ==================================================================
     # Dialogs
