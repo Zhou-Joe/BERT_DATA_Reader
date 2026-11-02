@@ -28,9 +28,18 @@ export and a Word failure report.
   - **Z Reversal** — detects the down-then-up acceleration-reversal signature.
   - **X/Y Reversal** — X vs Y hysteresis with per-axis allowance checks.
 - **ASTM az(+) floor** — az(+) ≥ 1.0 g at rest (gravity reads 1 g), enforced.
-- **Global Generate / Analyze** — one click plots / analyzes every chart tab.
+- **Automatic refresh / Analyze** — changing files or settings prepares fresh
+  results; each chart renders and applies analysis when opened.
+- **Background import and calculations** — progress, cancellation, and rejection
+  of results from superseded inputs.
 - **Prone posture** toggle — re-plots the ASTM egg shapes immediately.
 - **Auto test-boundary detection** — splits concatenated multi-ride recordings.
+- **Acquisition-aware timing** — preserves CSV timestamps and derives the sample
+  rate; sustained windows use seconds at the detected acquisition rate.
+- **Fractional trimming** — negative/pre-trigger and sub-second timestamps are
+  supported, with an exclusive end time.
+- **Compact workspace** — two-row command bar, scrollable analysis settings,
+  a searchable recording library, and readable light/dark chart styling.
 - **One-click batch export** — writes every loaded dataset back to `.sup`.
 - **Word failure report** — snapshot of all charts + a pass/fail verdict table.
 - **Light / Dark theme** with theme-aware icons.
@@ -61,8 +70,8 @@ export and a Word failure report.
 
 ```bash
 # 1. Clone
-git clone https://github.disney.com/ZHOUC056/BERT_READER.git
-cd BERT_READER
+git clone https://github.com/Zhou-Joe/BERT_DATA_Reader.git
+cd BERT_DATA_Reader
 
 # 2. Create a clean virtual environment (uv is fastest; venv works too)
 uv venv .venv --python 3.13            #  OR:  python -m venv .venv
@@ -87,7 +96,7 @@ python main.py
 ### Option B — Use the prebuilt Windows `.exe`
 
 If a `dist/BERT_READER_X.exe` is available (built by Option C below), just
-double-click it. No Python install required. The first "Add Data" dialog opens
+double-click it. No Python install required. The first "Add data" dialog opens
 in the folder where the `.exe` lives.
 
 ---
@@ -130,13 +139,21 @@ python gen_icon.py     # writes icon.ico + icon_preview.png from icon.svg
 > column ordering is detected from the `Channel Description` header line.
 
 Multiple datasets can be loaded; each gets an auto-assigned palette colour and
-a card in the right-hand sidebar.
+a selectable row in the searchable right-hand recording library.
+
+Both **Add Raw Data** and **Add Accel Data** accept multiple files in one dialog.
+Use Ctrl-click or Shift-click to select files, then Open. Each raw file adds
+its GB and ASTM recordings; each `.sup` file adds one recording. Import shows
+batch progress and a completion summary. Unreadable files are skipped with
+per-file errors while the remaining files continue. Duplicate filenames get
+unique display names. Cancel keeps any files already added and skips those
+still pending.
 
 ### 2. Configure the analysis (left control panel, below the tab list)
 
 - **Restraint Type** — affects the limit overlays (None / Convenience / …).
 - **Condition** — test condition class.
-- **Height** (cm) — scales the allowance limits (taller dummies → more allowance).
+- **Height** (in) — scales the allowance limits (taller dummies → more allowance).
 - **Prone** — toggles the prone-posture egg shapes + sustained ax− override.
 - **Analyze** — one global on/off that runs on every chart tab.
 
@@ -144,8 +161,12 @@ a card in the right-hand sidebar.
 
 - **Data selector** — pick the active dataset for the standard charts
   (ASTM / GB / AccZone / Reversal). Trend shows all datasets at once.
-- **Generate / Update** — re-plots **all** chart tabs from the current
-  selection + control-panel settings.
+- **Update charts** — manually recalculates analysis from the current inputs.
+  File and settings changes refresh automatically; hidden views draw when opened.
+- **Freshness status** — shows outdated, updating, ready, cancelled or failed.
+  Previous plots and verdicts stay hidden while results are outdated.
+- **Progress / Cancel** — import and numerical work run in the background.
+  Cancel stops applying unfinished work; use Update charts to retry.
 - **Cutoff** (Hz) — live low-pass filter cutoff (SpinBox, no modal dialog).
 - **Export All** — writes every loaded dataset to `.sup` in a chosen folder.
 
@@ -153,14 +174,16 @@ a card in the right-hand sidebar.
 
 - **Zoom / Pan / Reset View** toolbars on each chart.
 - **Click a data point** on the Acc Zone chart to read its time + acceleration.
-- **Right sidebar** — per-dataset card: colour swatch (click to recolour),
-  show/hide eye, pitch/seatback/roll/yaw angles, and min/max stats.
+- **Recording library** — search imported files, click a row to select it, and
+  toggle visibility using the eye. Each row's menu offers trimming, orientation,
+  axis edits, colour selection, export and removal. The selected signal's
+  statistics appear in a separate inspector; drag the divider to resize it.
 - **Generate Word report** — snapshots every chart + a pass/fail verdict table
   into a `.docx`.
 
 ### 5. File dialog defaults
 
-"Add Data" dialogs remember the last-used folder. On first run they open in the
+"Add data" dialogs remember the last-used folder. On first run they open in the
 folder containing the `.exe` (or the source root when running `python main.py`),
 **not** the PyInstaller temp extraction folder.
 
@@ -171,7 +194,10 @@ folder containing the `.exe` (or the source root when running `python main.py`),
 ```
 BERT_READER/
 ├── main.py                 # entry point
-├── main_window.py          # main window, floating bars, control panel, page generation
+├── main_window.py          # main window, bars, control panel, chart pages
+├── background.py           # cancellable Qt worker pool and queued signals
+├── analysis_pipeline.py    # numeric snapshots, filtering and prepared results
+├── processing_controller.py # automatic refresh, input validation and GUI delivery
 ├── accdata.py              # data loading (AccData, RawData), filter, reformat,
 │                           #   detect_test_boundaries, CSV column detection
 ├── sci_calculation.py      # butter_lowpass_filter, ProcessASTM, ProcessGB,
@@ -184,7 +210,7 @@ BERT_READER/
 ├── chart_reversal.py       # Z + X/Y reversal
 ├── chart_legend.py         # legend widgets
 ├── chart_utils.py          # series helpers
-├── sidebar.py              # right dataset sidebar (cards, colour picker, stats)
+├── sidebar.py              # recording library and selected-signal inspector
 ├── dialogs.py              # TruncateTimeDialog, ReportDialog, CutoffFrequencyDialog
 ├── theme.py                # token system, app palette/QSS, theme switching
 ├── nav_icons.py            # custom SVG nav-tab icons
@@ -200,9 +226,9 @@ BERT_READER/
 
 ## Known issues / notes
 
-- **pandas 3.x is not supported.** pandas 3.0 removed the silent dtype upcast,
-  which breaks the `.sup` header-injection pattern (`loc[-6, 'Time'] = '...'`).
-  Pin `pandas<3` (2.3.x is the tested version). The build venv already does this.
+- Validation currently uses **pandas 2.3.x**; keep `pandas<3` until the full
+  dependency stack has been validated with 3.x. Export headers now use an
+  explicit object table, leaving the numeric analysis frames unchanged.
 - The packaged `.exe` launches as a GUI app (no console window). Unhandled
   exceptions still surface in a dialog (`disable_windowed_traceback=False`).
 
@@ -211,3 +237,25 @@ BERT_READER/
 ## License
 
 Internal tooling — © Disney / SARC test engineering. Not for redistribution.
+
+
+## Development checks
+
+Run the numerical and headless Qt regression suite from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Exercise background import, cancellation and all seven views in both themes
+with a local DAQ recording:
+
+```bash
+python tools/review_gui.py --sample path/to/recording.csv --out path/to/previews
+# Batch import smoke check:
+python tools/review_gui.py --sample path/to/first.csv path/to/second.csv --out path/to/previews
+```
+
+See [GUI_REVIEW.md](GUI_REVIEW.md) for the changes, measured component timings,
+and remaining performance opportunities. Real recordings and preview images
+are kept outside the source tree.

@@ -206,8 +206,10 @@ class TruncateTimeDialog(_ThemedDialog):
         # Data duration (seconds) — used to seed sensible end-time defaults so
         # the user doesn't have to look up how long the recording is.
         try:
-            self._data_duration = float(self._data.data["Time"].iloc[-1])
+            self._data_start = float(self._data.data["Time"].iloc[0])
+            self._data_duration = float(self._data.data["Time"].iloc[-1]) + 1 / self._data.fs
         except Exception:
+            self._data_start = 0.0
             self._data_duration = 100000.0
 
         # Build the initial single row.
@@ -215,7 +217,7 @@ class TruncateTimeDialog(_ThemedDialog):
         # Seed a useful default for the first segment: end = full duration, so
         # segment 2+ auto-fill their start from it as the user adds rows.
         if self._end_spins:
-            self._end_spins[0].setValue(int(self._data_duration))
+            self._end_spins[0].setValue(self._data_duration)
         # Establish Tab-key navigation order across every input (see
         # _set_tab_order). Re-run whenever rows change (it depends on row count).
         self._set_tab_order()
@@ -251,10 +253,14 @@ class TruncateTimeDialog(_ThemedDialog):
         self._end_spins.clear()
 
         for i in range(n):
-            start = SpinBox()
+            start = DoubleSpinBox()
+            start.setDecimals(4)
+            start.setSingleStep(1 / self._data.fs)
             start.setRange(-100000, 100000)
             start.setSuffix(" s")
-            end = SpinBox()
+            end = DoubleSpinBox()
+            end.setDecimals(4)
+            end.setSingleStep(1 / self._data.fs)
             end.setRange(-100000, 100000)
             end.setSuffix(" s")
 
@@ -270,9 +276,9 @@ class TruncateTimeDialog(_ThemedDialog):
                 # so the chain stays contiguous even when the user jumps from
                 # e.g. 1 segment straight to 3.
                 prev_end_val = (self._end_spins[i - 1].value()
-                                if i > 0 and self._end_spins else 0)
+                                if i > 0 and self._end_spins else self._data_start)
                 start.setValue(prev_end_val)
-                end.setValue(int(self._data_duration))
+                end.setValue(self._data_duration)
 
             row = QHBoxLayout()
             row.setContentsMargins(0, 0, 0, 0)
@@ -394,6 +400,7 @@ class TruncateTimeDialog(_ThemedDialog):
             self.accept()
         except Exception as e:
             print(f"Truncate error: {e}")
+            self._mainui.statusBar().showMessage(f"Cannot truncate: {e}", 6000)
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +465,15 @@ class ExportDialog(_ThemedDialog):
                 position=qfw.InfoBarPosition.TOP,
                 parent=self,
             )
+            return
+
+        if (self._export_type.currentText() == 'Filtered Clean Data'
+                and self._mainui.plottype != 'Raw'
+                and self._data._filtered_cutoff != self._mainui.cutoff_spin.value()):
+            qfw.InfoBar.warning(
+                title='Filter update pending',
+                content='Wait for the current filter results, then export again.',
+                duration=4000, parent=self)
             return
 
         # 用系统保存对话框选择完整路径（旧代码把相对名直接写进进程 CWD）。
@@ -960,10 +976,12 @@ class ReportDialog(_ThemedDialog):
         if not data_list:
             return
         self._generating = True
+        self._mainui._begin_report_processing()
         try:
             self._generate(data_list)
         finally:
             self._generating = False
+            self._mainui._end_report_processing()
 
     def _generate(self, data_list) -> None:
         if not data_list:
@@ -1034,6 +1052,10 @@ class ReportDialog(_ThemedDialog):
                 data = mu.datadict.get(data_name)
                 if data is None:
                     continue
+                # A background refresh may have been cancelled for export.
+                # Bring this recording to the requested cutoff BEFORE any
+                # chart or verdict reads its filtered/calibrated frame.
+                data.filter_data(cutoff=mu.cutoff)
                 restraint = mu.select_restraint.currentText()
                 cond = mu.select_cond.currentText()
                 height = mu.height_input.value()
@@ -1235,6 +1257,7 @@ class ReportDialog(_ThemedDialog):
                     if entries:
                         sections["xr"] = entries
 
+                mu.trendplot.initplotxyz()
                 mu.clear_sidebar()
                 mu.replot_all()
                 self._write_doc_section(doc, data, data_name, verdicts, tmpdir,

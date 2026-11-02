@@ -31,7 +31,7 @@ from chart_utils import (
 from matplotlib.path import Path
 from chart_legend import ChartLegend
 from boundary_analysis import series_to_path, find_boundary_violations
-from sci_calculation import ProcessGB
+from sci_calculation import ProcessGB, sampling_frequency
 from theme import (LINE_WIDTH_DEFAULT, LINE_WIDTH_FITTING, chart_tooltip_style,
                    apply_chart_theme, MEASURED_POS_COLOR, MEASURED_NEG_COLOR)
 
@@ -238,7 +238,7 @@ class GBChartView(QWidget):
     # Data plotting
     # ------------------------------------------------------------------
 
-    def addplotxyz(self, data, color: str | None = None) -> None:
+    def addplotxyz(self, data, color: str | None = None, sustained=None) -> None:
         """Overlay measured data on the GB charts.
 
         The measured (+) traces use the shared dark-blue, measured (−) the
@@ -262,17 +262,22 @@ class GBChartView(QWidget):
         d0pz = max(1, data.iloc[:, 3].max())
         d0nz = min(1, data.iloc[:, 3].min())
 
-        d1p, d1n = ProcessGB(data, 5)
-        d2p, d2n = ProcessGB(data, 25)
-        d08p, d08n = ProcessGB(data, 40)
-        d10p, d10n = ProcessGB(data, 50)
-        d3p, d3n = ProcessGB(data, 100)
-        d30p, d30n = ProcessGB(data, 150)
-        d40p, d40n = ProcessGB(data, 200)
-        d4p, d4n = ProcessGB(data, 250)
-        d5p, d5n = ProcessGB(data, 500)
-        d6p, d6n = ProcessGB(data, 1000)
-        d7p, d7n = ProcessGB(data, 2000)
+        fs = sampling_frequency(data)
+        def calculate(duration):
+            if sustained is not None:
+                return sustained[duration]
+            return ProcessGB(data, max(1, round(fs * duration)))
+        d1p, d1n = calculate(0.01)
+        d2p, d2n = calculate(0.05)
+        d08p, d08n = calculate(0.08)
+        d10p, d10n = calculate(0.1)
+        d3p, d3n = calculate(0.2)
+        d30p, d30n = calculate(0.3)
+        d40p, d40n = calculate(0.4)
+        d4p, d4n = calculate(0.5)
+        d5p, d5n = calculate(1)
+        d6p, d6n = calculate(2)
+        d7p, d7n = calculate(4)
 
         p1 = [d0py, d1p[0], d2p[0], d08p[0], d10p[0], d3p[0],
               d30p[0], d40p[0], d4p[0], d5p[0], d6p[0], d7p[0]]
@@ -283,7 +288,7 @@ class GBChartView(QWidget):
         p4 = [d0nz, d1n[1], d2n[1], d08n[1], d10n[1], d3n[1],
               d30n[1], d40n[1], d4n[1], d5n[1], d6n[1], d7n[1]]
 
-        x_gb = [0.002, 0.01, 0.05, 0.08, 0.1, 0.2, 0.3, 0.4,
+        x_gb = [1.0 / fs, 0.01, 0.05, 0.08, 0.1, 0.2, 0.3, 0.4,
                 0.5, 1, 2, 4]
 
         # ay chart
@@ -479,7 +484,7 @@ class GBChartView(QWidget):
             # Merge the ring's arc halves into one closed loop's points.
             verts = []
             for s in series_group:
-                for p in s.pointsVector():
+                for p in s.points():
                     verts.append((float(p.x()), float(p.y())))
             if len(verts) < 3:
                 continue

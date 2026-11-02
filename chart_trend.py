@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QAreaSeries, QValueAxis, QScatterSeries
-from PySide6.QtCore import Qt, QPointF, QTimer
+from PySide6.QtCore import Qt, QPointF, QTimer, QMargins
 from PySide6.QtGui import QPainter, QColor, QPen, QCursor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QSizePolicy, QLabel,
@@ -39,7 +39,8 @@ class _SubChart(PanChartView):
 
         self._chart = QChart()
         self._chart.legend().hide()
-        self._chart.layout().setContentsMargins(4, 4, 4, 4)
+        self._chart.setMargins(QMargins(8, 4, 8, 4))
+        self._chart.layout().setContentsMargins(0, 0, 0, 0)
 
         # Axes
         self._axis_x = QValueAxis()
@@ -100,6 +101,13 @@ class _SubChart(PanChartView):
     def restyle_theme(self) -> None:
         """Re-apply the current palette after a light/dark switch."""
         apply_chart_theme(self._chart)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        # Ten ticks become ellipses on a laptop-sized chart. Allocate roughly
+        # 100px per timestamp so source times remain readable at narrow widths.
+        if hasattr(self, '_axis_x'):
+            self._axis_x.setTickCount(max(3, min(10, self.width() // 100)))
 
     @property
     def chart_obj(self) -> QChart:

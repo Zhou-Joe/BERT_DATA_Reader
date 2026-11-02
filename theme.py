@@ -47,10 +47,10 @@ from qfluentwidgets.common import FluentSystemColor as _SC
 # 19-colour dataset palette (kept identical to the original)
 # ---------------------------------------------------------------------------
 DATASET_COLORS = [
-    '#FF0000', '#0000FF', '#ADD8E6', '#800080', '#FFFF00',
-    '#00FF00', '#FF00FF', '#FFC0CB', '#808080', '#000000',
-    '#FFA500', '#A52A2A', '#800000', '#008000', '#808000',
-    '#00008B', '#7FFFD4', '#C0C0C0', '#00FFFF',
+    '#2563EB', '#D97706', '#0D9488', '#9333EA', '#E11D48',
+    '#0284C7', '#65A30D', '#C026D3', '#64748B', '#F97316',
+    '#14B8A6', '#8B5CF6', '#DC2626', '#16A34A', '#CA8A04',
+    '#6366F1', '#06B6D4', '#A855F7', '#DB2777',
 ]
 
 # Backwards-compatible aliases (a few modules import these names)
@@ -71,7 +71,7 @@ FONT_TITLE = 16
 
 # Layout constants
 SIDEBAR_MIN_WIDTH = 380
-LINE_WIDTH_DEFAULT = 0.6
+LINE_WIDTH_DEFAULT = 1.3
 # Thicker line for the fitting charts (GB + ASTM), where curves need to read
 # clearly against the reference grid and overlapping rides.
 LINE_WIDTH_FITTING = 2.0
@@ -161,9 +161,9 @@ def _build_tokens(dark: bool) -> dict:
         tk = {
             "mode": "dark",
             # chrome
-            "window_bg": "#202020",
-            "bg": "#1F1F1F",
-            "surface": "#2B2B2B",
+            "window_bg": "#171D28",
+            "bg": "#171D28",
+            "surface": "#202938",
             "surface_alt": "#292929",
             "surface_hover": "#3A3A3A",
             "surface_pressed": "#454545",
@@ -187,8 +187,8 @@ def _build_tokens(dark: bool) -> dict:
             "subtle_fill": "#2D2D2D",
             "subtle_fill_hover": "#3A3A3A",
             # chart palette
-            "chart_bg": "#1F1F1F",
-            "chart_grid": "#333333",
+            "chart_bg": "#202938",
+            "chart_grid": "#344155",
             "chart_axis": "#B0B0B0",
             "chart_title": "#FFFFFF",
             "chart_text": "#D8D8D8",
@@ -227,8 +227,8 @@ def _build_tokens(dark: bool) -> dict:
     else:
         tk = {
             "mode": "light",
-            "window_bg": "#F3F3F3",
-            "bg": "#FAFAFA",
+            "window_bg": "#F3F6FB",
+            "bg": "#F3F6FB",
             "surface": "#FFFFFF",
             "surface_alt": "#F5F5F5",
             "surface_hover": "#EDEDED",
@@ -250,7 +250,7 @@ def _build_tokens(dark: bool) -> dict:
             "subtle_fill": "#F9F9F9",
             "subtle_fill_hover": "#EFEFEF",
             "chart_bg": "#FFFFFF",
-            "chart_grid": "#ECECEC",
+            "chart_grid": "#E8EDF5",
             "chart_axis": "#5B5B5B",
             "chart_title": "#1A1A1A",
             "chart_text": "#333333",
@@ -515,10 +515,19 @@ def _app_qss(tk: dict) -> str:
     Applied globally via ``QApplication.setStyleSheet`` on every theme switch.
     """
     return (
-        f"QToolBar {{ background: transparent; border: none; spacing: 2px; }}"
+        f"QToolBar {{ background: transparent; border: none; spacing: 3px; padding: 4px; }}"
+        f"QWidget#topBar {{ background: {tk['surface']}; border-bottom: 1px solid {tk['divider']}; }}"
+        f"QWidget#ctrlPanel, QScrollArea#analysisScroll {{ background: {tk['window_bg']}; border: none; }}"
+        f"QLabel#pendingChart {{ color: {tk['text_secondary']}; background: {tk['chart_bg']}; font-size: 12pt; border-radius: 10px; padding: 20px; }}"
+        f"QLabel#workspaceTitle {{ font-size: 12pt; font-weight: 600; }}"
+        f"QLabel#sectionHeading {{ color: {tk['text_secondary']}; font-size: 8pt; font-weight: 600; padding: 8px 0; }}"
+        f"QLabel#secondaryText {{ color: {tk['text_secondary']}; line-height: 1.5; }}"
+        f"QWidget#emptyState {{ background: {tk['surface']}; border-radius: 12px; }}"
+        f"QLabel#emptyTitle {{ font-size: 17pt; font-weight: 600; padding: 12px; }}"
+        f"QWidget#InfoCard {{ background: {tk['surface']}; border: 1px solid {tk['card_stroke']}; border-radius: 10px; }}"
         f"QToolButton, QToolBar QToolButton {{"
         f"  color: {tk['text']}; background: transparent; border: none;"
-        f"  padding: 2px 6px; border-radius: 4px;"
+        f"  padding: 5px 8px; border-radius: 6px;"
         f"}}"
         f"QToolButton:hover, QToolBar QToolButton:hover {{"
         f"  background: {tk['surface_hover']};"

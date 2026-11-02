@@ -9,8 +9,8 @@ class AccData:
     def __init__(self, rawdata, path=None, is_raw=False, cutoff=5, *args, **kwargs):
         if is_raw:
             self.cutoff=cutoff
-            self.rawdata=rawdata
-            self.data=rawdata
+            self.rawdata=rawdata.copy()
+            self.data=rawdata.copy()
             self.filename=path
             self.filtered_data = pd.DataFrame()
             self.std_data = pd.DataFrame()
@@ -33,6 +33,9 @@ class AccData:
             self.start_idx = 0
             self.columns = list(rawdata.columns)
             self.column_row_content = ' '.join(self.columns)
+            self.calculate_sampling_frequency()
+            self.get_offset()
+            self.filter_data(cutoff=cutoff)
 
         else:
             self.cutoff=cutoff
@@ -90,7 +93,7 @@ class AccData:
         self.seatback_angle = 0
 
     def get_angle(self):
-        for i in range(10):
+        for i in range(min(10, len(self.rawdata))):
             raw_line = None
             try:
                 raw_line = self.rawdata.iloc[i, 0]
@@ -139,45 +142,21 @@ class AccData:
         self.offset_z = self.z_avg - self.zero_z
 
     def get_core_idx(self):
-        for i in range(20):
-            try:
-                if "SARCcolumnIDs" in str(self.rawdata.iloc[i, 0]):
-                    self.col_idx = i
-            except Exception as e:
-                print(e)
-
-            try:
-                m1 = round(float(self.rawdata.iloc[i, 0]), 3)
-                m2 = round(float(self.rawdata.iloc[i + 1, 0]), 3)
-            except:
-                m1 = 0
-                m2 = 0
-            if m1 == 0 and m2 > m1:
-                self.start_idx = i
-
-        # Fallback: if start_idx is still 0 and col_idx is set, find first numeric row after header
-        # Only apply fallback if start_idx wasn't successfully set (check if col_idx was found)
-        if self.start_idx == 0 and self.col_idx > 0:
-            # Try multiple columns and larger search range
-            for col_check in [0, 1, 2]:  # Check Time column, then X, then Y
-                for i in range(self.col_idx + 1, min(self.col_idx + 100, len(self.rawdata))):
-                    try:
-                        # Try to convert to float
-                        val = float(self.rawdata.iloc[i, col_check])
-                        # Check if it's a valid data point (reasonable range)
-                        if -1000 <= val <= 1000:
-                            self.start_idx = i
-                            print(f"Found start_idx={i} at column {col_check} with value {val}")
-                            break
-                    except (ValueError, TypeError):
-                        continue
-                if self.start_idx > 0:
-                    break
-
-        try:
-            re.sub(r'time', 'Time', self.rawdata.iloc[self.col_idx, 0])
-        except Exception as e:
-            print(e)
+        # Locate the header independently of the numeric time origin. Looking
+        # for a 0 -> positive transition dropped pre-trigger data and failed on
+        # recordings whose first timestamp was nonzero.
+        headers = self.rawdata.iloc[:, 0].astype(str).str.contains(
+            "SARCcolumnIDs", regex=False)
+        matches = np.flatnonzero(headers.to_numpy())
+        if not len(matches):
+            raise ValueError("Missing SARCcolumnIDs header in acceleration file")
+        self.col_idx = int(matches[0])
+        numeric = self.rawdata.iloc[self.col_idx + 1:, :4].apply(
+            pd.to_numeric, errors="coerce")
+        rows = np.flatnonzero(numeric.notna().all(axis=1).to_numpy())
+        if not len(rows):
+            raise ValueError("No numeric acceleration samples found")
+        self.start_idx = self.col_idx + 1 + int(rows[0])
 
     def get_colID(self, column_str=None):
         try:
@@ -200,19 +179,17 @@ class AccData:
         if len(self.columns) > self.rawdata.shape[1] or "" in self.columns:
             raise ValueError(
                 f"表头列数({len(self.columns)})与数据列数({self.rawdata.shape[1]})不符")
-        self.data = pd.DataFrame()
-        for i in range(len(self.columns)):
-            self.data[self.columns[i]] = self.rawdata.iloc[self.start_idx:, i]
+        if len(self.columns) != 4 or self.columns[0].lower() != "time":
+            raise ValueError("Expected Time and three acceleration columns")
+        self.columns[0] = "Time"
+        self.data = self.rawdata.iloc[self.start_idx:, :4].copy()
+        self.data.columns = self.columns
+        self.data = self.data.apply(pd.to_numeric, errors="raise").astype(float)
         self.data.reset_index(drop=True, inplace=True)
-        if "Time" in self.columns:
-            # pandas 3.0 removed errors='ignore'; coerce turns any stray
-            # non-numeric row (e.g. a header that slipped past start_idx) into
-            # NaN, which we then drop. By here data is past the header so this
-            # is just defensive.
-            self.data['Time'] = pd.to_numeric(self.data['Time'], errors='coerce')
-            self.data = self.data.dropna(subset=['Time'])
-            self.data['Time'] = self.data['Time'].round(decimals=4)
-        self.data = self.data.round(decimals=4)
+        if self.data.empty or not np.isfinite(self.data.to_numpy()).all():
+            raise ValueError("Acceleration data must contain finite numeric samples")
+        if len(self.data) > 1 and (np.diff(self.data['Time']) <= 0).any():
+            raise ValueError("Timestamps must be strictly increasing")
         # Source data changed — invalidate the filter cache so the next
         # filter_data call actually recomputes.
         self._filtered_cutoff = None
@@ -221,8 +198,7 @@ class AccData:
         """Calculate actual sampling frequency from time data"""
         try:
             if len(self.data) > 1:
-                # Calculate time interval from first two data points
-                time_interval = self.data.iloc[1, 0] - self.data.iloc[0, 0]
+                time_interval = float(np.median(np.diff(self.data.iloc[:, 0])))
                 if time_interval > 0:
                     # Convert time interval to sampling frequency
                     self.fs = int(round(1.0 / time_interval))
@@ -245,21 +221,23 @@ class AccData:
         if (getattr(self, "_filtered_cutoff", None) == cutoff
                 and not self.filtered_data.empty and not self.std_data.empty):
             return
-        self.filtered_data['Time'] = self.data['Time']
-        self.std_data['Time'] = self.data['Time']
-        cutoff = cutoff
+        filtered = pd.DataFrame({'Time': self.data['Time']})
+        standard = pd.DataFrame({'Time': self.data['Time']})
         i = 0
         zero_list = [self.x_avg, self.y_avg, self.z_avg]
         offset_list=[self.offset_x, self.offset_y, self.offset_z]
         for cols in list(self.data.columns):
             if not "Time" in cols:
-                self.std_data[cols] = butter_lowpass_filter(self.data[cols], cutoff, fs=self.fs, order=4,
-                                                                 zeropoint=zero_list[i])-offset_list[i]
-                self.filtered_data[cols] = butter_lowpass_filter(self.data[cols], cutoff, fs=self.fs, order=4,
-                                                                 zeropoint=zero_list[i])
+                values = butter_lowpass_filter(self.data[cols], cutoff, fs=self.fs,
+                                               order=4, zeropoint=zero_list[i])
+                filtered[cols] = values
+                standard[cols] = values - offset_list[i]
                 i += 1
-        self.filtered_data = self.filtered_data.round(decimals=4)
-        self.std_data = self.std_data.round(decimals=4)
+        filtered.iloc[:, 1:] = filtered.iloc[:, 1:].round(4)
+        standard.iloc[:, 1:] = standard.iloc[:, 1:].round(4)
+        self.filtered_data = filtered
+        self.std_data = standard
+        self.cutoff = cutoff
         # Remember the cutoff these frames were produced at so the next call
         # with the same cutoff is a no-op. Invalidated in reformat (data change)
         # and get_offset (zero-point change).
@@ -285,7 +263,8 @@ class AccData:
                     self.data[cols], 1, fs=self.fs, order=4,
                     zeropoint=zero_list[i]) - offset_list[i])
                 i += 1
-        return frame.round(decimals=4)
+        frame.iloc[:, 1:] = frame.iloc[:, 1:].round(4)
+        return frame
 
     def set_angle(self, pitch_angle, seatback_angle, roll_angle, yaw_angle):
         self.pitch_angle = pitch_angle
@@ -294,96 +273,75 @@ class AccData:
         self.yaw_angle = yaw_angle
         self.get_offset()
 
-    def reformat(self, overwrite=False, setting_angle=False, pitch_angle=0, seatback_angle=0, roll_angle=0, yaw_angle=0, cutoff=5):
+    def _export_frame(self):
+        """Build the mixed header/body table without changing numeric frames."""
+        rows = [
+            f"Initial Pitch Angle: {self.pitch_angle}",
+            f"Seatback Angle: {self.seatback_angle}",
+            f"Initial Roll Angle: {self.roll_angle}",
+            f"Initial Yaw Angle: {self.yaw_angle}",
+            f"SARCcolumnIDs: {' '.join(self.columns)}", "",
+        ]
+        header = pd.DataFrame(np.nan, index=range(6), columns=self.columns,
+                              dtype=object)
+        header['Time'] = rows
+        return pd.concat([header, self.data.astype(object)], ignore_index=True)
+
+    def reformat(self, overwrite=False, setting_angle=False, pitch_angle=0,
+                 seatback_angle=0, roll_angle=0, yaw_angle=0, cutoff=5):
         if setting_angle:
             self.set_angle(pitch_angle, seatback_angle, roll_angle, yaw_angle)
-        self.new_data = pd.DataFrame()
-        for i in self.columns:
-            self.new_data[i] = self.data[i]
-        self.new_data.loc[-6, 'Time'] = 'Initial Pitch Angle: {}'.format(self.pitch_angle)
-        self.new_data.loc[-5, 'Time'] = 'Seatback Angle: {}'.format(self.seatback_angle)
-        self.new_data.loc[-4, 'Time'] = 'Initial Roll Angle: {}'.format(self.roll_angle)
-        self.new_data.loc[-3, 'Time'] = 'Initial Yaw Angle: {}'.format(self.yaw_angle)
-        self.new_data.loc[-2, 'Time'] = 'SARCcolumnIDs: {}'.format(self.column_row_content)
-        self.new_data.loc[-1, 'Time'] = np.nan
-        self.new_data.sort_index(inplace=True)
-        self.new_data.reset_index(drop=True, inplace=True) #only for export if not overwrite
-        if overwrite == True:
-            self.rawdata = self.new_data
+        self.new_data = self._export_frame()
+        if overwrite:
+            self.rawdata = self.new_data.copy()
             self.get_core_idx()
             self.get_colID()
             self.parsie_cols()
+            self.calculate_sampling_frequency()
             self.get_offset()
             self.filter_data(cutoff=cutoff)
 
     def edit_data(self, method, value_array, cutoff):
-
-        self.raw_data=pd.DataFrame()
-        for i in self.columns:
-            self.raw_data[i] = self.data[i]
-        self.raw_data.loc[-6, 'Time'] = 'Initial Pitch Angle: {}'.format(self.pitch_angle)
-        self.raw_data.loc[-5, 'Time'] = 'Seatback Angle: {}'.format(self.seatback_angle)
-        self.raw_data.loc[-4, 'Time'] = 'Initial Roll Angle: {}'.format(self.roll_angle)
-        self.raw_data.loc[-3, 'Time'] = 'Initial Yaw Angle: {}'.format(self.yaw_angle)
-        self.raw_data.loc[-2, 'Time'] = 'SARCcolumnIDs: {}'.format(self.column_row_content)
-        self.raw_data.loc[-1, 'Time'] = np.nan
-        self.raw_data.sort_index(inplace=True)
-        self.raw_data.reset_index(drop=True, inplace=True)  # only for export if not overwrite
-        self.rawdata=self.raw_data
-        if method == 'add':
-            for i in range(3):
-                self.rawdata.iloc[:,i+1] = self.rawdata.iloc[:,i+1].values + value_array[i]
-        if method == 'multiply':
-            for i in range(3):
-                self.rawdata.iloc[:, i + 1] = self.rawdata.iloc[:, i + 1].values * value_array[i]
-
-
-        self.rawdata=self.rawdata.round(decimals=4)
-
-        self.get_core_idx()
-        self.get_colID()
-        self.parsie_cols()
-        self.get_offset()
-        self.filter_data(cutoff=cutoff)
-
-
+        values = np.asarray(value_array, dtype=float)
+        if values.shape != (3,) or not np.isfinite(values).all():
+            raise ValueError("Enter three finite acceleration values")
+        if method not in ('add', 'multiply'):
+            raise ValueError(f"Unknown edit method: {method}")
+        frame = self.data.copy()
+        axes = frame.iloc[:, 1:].to_numpy()
+        frame.iloc[:, 1:] = axes + values if method == 'add' else axes * values
+        self.data = frame.round(4)
+        self.reformat(overwrite=True, cutoff=cutoff)
 
     def truncate_data(self, starttime, endtime, cutoff):
-        # Negative start_row would slice from the END of the series (Python
-        # negative indexing), so clamp to 0 — a negative starttime (pre-trigger
-        # data) means "start from the beginning".
-        start_row = max(0, int(starttime) * self.fs)
-        end_row = int(endtime) * self.fs
-        self.new_data=pd.DataFrame()
-        for i in self.columns:
-            self.new_data[i] = self.data[i][start_row:end_row]
-        self.new_data['Time']=self.new_data['Time'].values-starttime
-        self.new_data.loc[-6, 'Time'] = 'Initial Pitch Angle: {}'.format(self.pitch_angle)
-        self.new_data.loc[-5, 'Time'] = 'Seatback Angle: {}'.format(self.seatback_angle)
-        self.new_data.loc[-4, 'Time'] = 'Initial Roll Angle: {}'.format(self.roll_angle)
-        self.new_data.loc[-3, 'Time'] = 'Initial Yaw Angle: {}'.format(self.yaw_angle)
-        self.new_data.loc[-2, 'Time'] = 'SARCcolumnIDs: {}'.format(self.column_row_content)
-        self.new_data.loc[-1, 'Time'] = np.nan
-        self.new_data.sort_index(inplace=True)
-        self.new_data.reset_index(drop=True, inplace=True) #only for export if not overwrite
-        self.rawdata = self.new_data
-        self.get_core_idx()
-        self.get_colID()
-        self.parsie_cols()
-        self.get_offset()
-        self.filtered_data=pd.DataFrame()
-        self.std_data=pd.DataFrame()
-        self.filter_data(cutoff=cutoff)
+        """Keep [start, end) by timestamp, preserving fractional/pretrigger time."""
+        if not np.isfinite([starttime, endtime]).all() or endtime <= starttime:
+            raise ValueError("End time must be greater than start time")
+        time = self.data['Time'].to_numpy()
+        lo, hi = np.searchsorted(time, [starttime, endtime], side='left')
+        frame = self.data.iloc[lo:hi].copy().reset_index(drop=True)
+        if len(frame) < 2:
+            raise ValueError("The selected interval must contain at least two samples")
+        frame['Time'] = frame['Time'] - starttime
+        self.data = frame
+        self.reformat(overwrite=True, cutoff=cutoff)
+
     def reset_data(self):
         self.parsie_cols()
-    def get_data_stats(self, data):  # output dataframe value
-        minmax = [[data.iloc[:, 1].idxmax() / self.fs, data.iloc[:, 1].idxmin() / self.fs, data.iloc[:, 1].max(),
-                   data.iloc[:, 1].min(), self.zero_x],
-                  [data.iloc[:, 2].idxmax() / self.fs, data.iloc[:, 2].idxmin() / self.fs, data.iloc[:, 2].max(),
-                   data.iloc[:, 2].min(), self.zero_y],
-                  [data.iloc[:, 3].idxmax() / self.fs, data.iloc[:, 3].idxmin() / self.fs, data.iloc[:, 3].max(),
-                   data.iloc[:, 3].min(), self.zero_z]]
-        return pd.DataFrame(minmax, index=['X', 'Y', 'Z'], columns=['t (Max)', 't (Min)','Max',  'Min', 'Zero Pos'])
+        self.calculate_sampling_frequency()
+        self.get_offset()
+        self.filter_data(cutoff=self.cutoff)
+
+    def get_data_stats(self, data):
+        rows = []
+        for column, zero in zip(data.columns[1:],
+                                (self.zero_x, self.zero_y, self.zero_z)):
+            series = data[column]
+            rows.append([data.loc[series.idxmax(), 'Time'],
+                         data.loc[series.idxmin(), 'Time'],
+                         series.max(), series.min(), zero])
+        return pd.DataFrame(rows, index=['X', 'Y', 'Z'],
+                            columns=['t (Max)', 't (Min)', 'Max', 'Min', 'Zero Pos'])
 
     def get_angle_info(self):  # output string value
         str_info = ("{}\nPitch: {}°  Seatback: {}°  Roll: {}°  Yaw: {}°".format
@@ -394,8 +352,7 @@ class AccData:
     def export_to_file(self, path):
         # 不再用裸 except 吞掉写盘异常：调用方（ExportDialog /
         # _export_all_to_sup）都在 try 内接住并计数/提示，让失败可见。
-        self.reformat(overwrite=True, setting_angle=False)
-        self.rawdata.to_csv(path, sep='\t', header=False, index=False)
+        self._export_frame().to_csv(path, sep='\t', header=False, index=False)
 
     def export_filter(self, path, plottype):
         # 同上：异常向上抛。plottype=='Raw'（顶栏 Raw Data 视图）此前两个分支
@@ -440,122 +397,107 @@ def _csv_first_data_row(path: str, max_scan: int = 200) -> int:
 
 
 class RawData:
+    """DAQ CSV or six-channel tab data; read the numeric body only once."""
+
     def __init__(self, path, *args, **kwargs):
+        import csv
         try:
             self.filename = path
-            self.is_csv_format = False
-            self.sample_rate = None  # Will be detected from header
-            # Default column mapping (fallback)
+            with open(path, encoding='utf-8-sig', errors='replace') as stream:
+                header_lines = []
+                for line in stream:
+                    header_lines.append(line)
+                    if len(header_lines) >= 200:
+                        break
+            self.is_csv_format = any(',' in line for line in header_lines[:5])
+            delimiter = ',' if self.is_csv_format else '\t'
+            labels = None
+            sample_rate = None
+            start = None
+            for index, line in enumerate(header_lines):
+                fields = next(csv.reader([line], delimiter=delimiter))
+                fields = [field.strip() for field in fields]
+                if fields and fields[0].lower().startswith('sample rate'):
+                    sample_rate = float(fields[1])
+                if any('GB_' in field.upper() or 'ASTM_' in field.upper()
+                       or '60CM' in field.upper() or '13INCH' in field.upper()
+                       for field in fields):
+                    labels = fields
+                nonempty = [field for field in fields if field]
+                try:
+                    if len(nonempty) >= 6:
+                        [float(field) for field in nonempty]
+                        start = index
+                        break
+                except ValueError:
+                    pass
+            if start is None:
+                raise ValueError('No numeric data found in the first 200 rows')
+            body = pd.read_csv(path, sep=delimiter, skiprows=start, header=None,
+                               encoding='utf-8-sig').dropna(axis=1, how='all')
+            body = body.apply(pd.to_numeric, errors='raise').astype(float)
+            if body.empty or not np.isfinite(body.to_numpy()).all():
+                raise ValueError('Data must contain finite numeric samples')
+            # CSV DAQ exports include Time as the first column. Legacy tab
+            # files contain six channels; seven-column tab files include Time.
+            has_time = self.is_csv_format or body.shape[1] == 7
+            if has_time:
+                if body.shape[1] < 7:
+                    raise ValueError('Expected Time and six acceleration channels')
+                self.time = body.iloc[:, 0].to_numpy(copy=True)
+                self.rawdata = body.iloc[:, 1:].reset_index(drop=True)
+            else:
+                if body.shape[1] != 6:
+                    raise ValueError('Expected six acceleration channels')
+                rate = sample_rate or 500.0
+                if not np.isfinite(rate) or rate <= 0:
+                    raise ValueError('Sample rate must be positive')
+                self.time = np.arange(len(body), dtype=float) / rate
+                self.rawdata = body.reset_index(drop=True)
+            if len(self.time) < 2 or (np.diff(self.time) <= 0).any():
+                raise ValueError('Timestamps must be strictly increasing')
+            self.sample_rate = 1.0 / float(np.median(np.diff(self.time)))
+            self.shape = self.rawdata.shape
             self.gb_col_indices = [0, 1, 2]
             self.astm_col_indices = [3, 4, 5]
-
-            self.rawdata = pd.read_csv(path, header=None, index_col=False, sep='\t', low_memory=False)
-            if self.rawdata.shape[1]>5:
-                self.rawdata.dropna(inplace=True, axis=1)
-                self.shape = self.rawdata.shape
-            else:
-                self.is_csv_format = True
-                # Don't hardcode the header row count — different export tools
-                # produce different header lengths (this file has 23 metadata
-                # rows before the first numeric data line, others may differ).
-                # Scan the file for the first all-numeric row and skip to there.
-                skip_n = _csv_first_data_row(path)
-                self.rawdata = pd.read_csv(path, index_col=False, sep=',',
-                                          skiprows=skip_n, header=None).iloc[:, 1:]
-                self.rawdata.dropna(inplace=True, axis=1)
-                self.shape = self.rawdata.shape
-
-            self.detect_columns(path)
+            if labels:
+                # Metadata begins with "Channel Description"; data headings
+                # begin with "Time". Both precede the six channel labels.
+                if len(labels) > 6 and (has_time or not any(
+                        token in labels[0].upper() for token in ('GB_', 'ASTM_', '60CM', '13INCH'))):
+                    labels = labels[1:]
+                mappings = {'gb': {}, 'astm': {}}
+                for idx, label in enumerate(labels):
+                    upper = label.upper()
+                    group = ('gb' if ('GB_' in upper or '60CM' in upper) else
+                             'astm' if ('ASTM_' in upper or '13INCH' in upper)
+                             else None)
+                    if group:
+                        axis = re.search(r'[-_ ]([XYZ])(?:\b|$)', upper)
+                        if axis:
+                            mappings[group][axis.group(1)] = idx
+                for group, attr in [('gb', 'gb_col_indices'),
+                                    ('astm', 'astm_col_indices')]:
+                    if set(mappings[group]) != {'X', 'Y', 'Z'}:
+                        raise ValueError(f'Cannot identify all three {group.upper()} axes')
+                    setattr(self, attr, [mappings[group][axis] for axis in 'XYZ'])
             self.init_data()
-        except Exception as e:
-            # 加载失败必须向上抛：只 print 时对象停留在半初始化状态
-            # （GB_data/ASTM_data 缺失），调用方随后调 export_data() 会抛出
-            # 更晦涩的 AttributeError；且打包版 console=False 下 print 不可见。
-            raise RuntimeError(f"无法解析原始数据文件 {path}: {e}") from e
-
-    def detect_columns(self, path):
-        """Detect which columns belong to GB and ASTM by reading the file header."""
-        try:
-            if self.is_csv_format:
-                # CSV format: read the header lines to find Channel Description (row 10) or data header (row 23)
-                with open(path, 'r') as f:
-                    lines = f.readlines()
-
-                # Search for "Channel Description" line or data header line with GB/ASTM labels
-                header_line = None
-                for line in lines:
-                    stripped = line.strip()
-                    # Look for the data header line (e.g., "Time,Chan 0:GB_X,Chan 1:GB_Y,...")
-                    if 'GB_' in stripped.upper() or 'ASTM_' in stripped.upper():
-                        header_line = stripped
-                        break
-                    # Also look for Channel Description line
-                    if 'Channel Description' in stripped:
-                        header_line = stripped
-                        break
-
-                if header_line:
-                    # Parse column labels from the header.
-                    parts = [p.strip() for p in header_line.split(',')]
-                    # The Time column is dropped by .iloc[:,1:] after read, so a
-                    # channel's rawdata index = its CSV column index minus the
-                    # number of dropped columns that PRECEDE it. Normally Time
-                    # is column 0 (one dropped column before every channel), so
-                    # the offset is 1. Detect it explicitly instead of assuming.
-                    time_col = next(
-                        (i for i, p in enumerate(parts)
-                         if p.upper() == 'TIME' or p.upper().startswith('TIME')),
-                        0)
-                    drop_offset = 1 if time_col == 0 else 0
-                    gb_indices = []
-                    astm_indices = []
-                    for idx, part in enumerate(parts):
-                        part_upper = part.upper()
-                        if 'GB_' in part_upper or '60CM' in part_upper:
-                            gb_indices.append(idx - drop_offset)
-                        elif 'ASTM_' in part_upper or '13INCH' in part_upper:
-                            astm_indices.append(idx - drop_offset)
-
-                    if len(gb_indices) == 3 and len(astm_indices) == 3:
-                        self.gb_col_indices = gb_indices
-                        self.astm_col_indices = astm_indices
-                        print(f"Detected columns from header - GB cols: {gb_indices}, ASTM cols: {astm_indices}")
-                        return
-
-                # Fallback: if header detection failed, use default (GB=0,1,2 ASTM=3,4,5)
-                print("Warning: Could not detect GB/ASTM columns from header, using default mapping (GB=cols 0-2, ASTM=cols 3-5)")
-                self.gb_col_indices = [0, 1, 2]
-                self.astm_col_indices = [3, 4, 5]
-            else:
-                # Tab-separated format: try to read header for column labels
-                # Default: GB=0,1,2 ASTM=3,4,5
-                print("Tab format: using default mapping (GB=cols 0-2, ASTM=cols 3-5)")
-                self.gb_col_indices = [0, 1, 2]
-                self.astm_col_indices = [3, 4, 5]
-        except Exception as e:
-            print(f"Error detecting columns: {e}, using defaults")
+        except Exception as error:
+            raise RuntimeError(f'Cannot parse raw data file {path}: {error}') from error
 
     def init_data(self):
-        ASTM_cols_str = "Time 13inch_accel-x 13inch_accel-y 13inch_accel-z"
-        GB_cols_str = "Time 60cm_accel-x 60cm_accel-y 60cm_accel-z"
-        ASTM_cols = ASTM_cols_str.split(' ')
-        GB_cols = GB_cols_str.split(' ')
-        col_time = pd.DataFrame(np.arange(0, self.shape[0] * 0.002, 0.002), columns=['Time'])
-        ASTM_data = pd.DataFrame()
-        ASTM_data['Time'] = col_time['Time']
-        GB_data = pd.DataFrame()
-        GB_data['Time'] = col_time['Time']
+        frames = []
+        for group, indices, prefix in [
+                ('GB', self.gb_col_indices, '60cm'),
+                ('ASTM', self.astm_col_indices, '13inch')]:
+            columns = ['Time'] + [f'{prefix}_accel-{axis}' for axis in 'xyz']
+            frame = pd.DataFrame(np.column_stack([
+                self.time, self.rawdata.iloc[:, indices].to_numpy()]),
+                columns=columns)
+            frames.append(AccData(frame, is_raw=True,
+                                  path=f'({group}){os.path.basename(self.filename)}'))
+        self.GB_data, self.ASTM_data = frames
 
-        # Use detected column indices for both CSV and Tab formats
-        for i in range(3):
-            GB_data[GB_cols[i + 1]] = self.rawdata.iloc[:, self.gb_col_indices[i]]
-            ASTM_data[ASTM_cols[i + 1]] = self.rawdata.iloc[:, self.astm_col_indices[i]]
-
-        self.GB_data = AccData(GB_data, is_raw=True, path="(GB)"+os.path.basename(self.filename))
-        self.GB_data.set_colID(GB_cols_str)
-
-        self.ASTM_data = AccData(ASTM_data,is_raw=True, path="(ASTM)"+os.path.basename(self.filename))
-        self.ASTM_data.set_colID(ASTM_cols_str)
     def export_data(self):
         return self.GB_data, self.ASTM_data
 
@@ -669,8 +611,7 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
          ``min_test_s`` AND mostly below ``quiet_thresh`` (active fraction <
          ``min_active_frac``) is dead air carved out by the split, not a test.
          A short-but-genuinely-active test is kept.
-      7. return each test's [start_s, end_s] as INTEGER seconds, matching
-         truncate_data's ``int(time) * fs`` convention.
+      7. return each test's [start_s, end_s) in source timestamps.
 
     Parameters
     ----------
@@ -707,11 +648,10 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
 
     Returns
     -------
-    list[tuple[int, int]]
+    list[tuple[float, float]]
         One (start_seconds, end_seconds) pair per detected test. Empty list
         if the recording is too short to contain a test. Times are taken
-        directly from the ``Time`` column (may be negative) and rounded to
-        integers.
+        directly from the ``Time`` column (may be negative). End is exclusive.
     """
     df = getattr(acc_data, "data", None)
     fs = getattr(acc_data, "fs", 500) or 500
@@ -817,8 +757,9 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
 
     regions = [(s, e) for s, e in regions if not _is_short_quiet(s, e)]
 
-    # 8. Sample indices -> integer seconds (from the Time column).
+    # 8. Sample indices -> timestamps, with an exclusive right edge.
     out = []
     for s, e in regions:
-        out.append((int(round(float(t[s]))), int(round(float(t[e])))))
+        end = float(t[e + 1]) if e + 1 < len(t) else float(t[e]) + 1 / fs
+        out.append((float(t[s]), end))
     return out

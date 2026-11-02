@@ -718,6 +718,7 @@ class _ReversalContainerBase(QWidget):
         self.annot_mode: str = "Single"
         # Cached source arrays per axis key: {key: (time, axis_values, fs)}.
         self._cached_data: dict[str, tuple] = {}
+        self._prepared_reversals = None
         # Whether reversal overlays are currently shown.
         self._analysis_active: bool = False
         # Number of detected reversal events across all axes (for the toolbar
@@ -798,6 +799,7 @@ class _ReversalContainerBase(QWidget):
             # look exactly like the app's initial state.
             reset_chart_view(sub)
         self._cached_data.clear()
+        self._prepared_reversals = None
         self._data_series.clear()
         self._analysis_active = False
         self.event_count = 0
@@ -831,7 +833,7 @@ class _ReversalContainerBase(QWidget):
                 return self._subcharts[idx]
         return None
 
-    def plot_data(self, data_df, color: str, fs: float) -> None:
+    def plot_data(self, data_df, color: str, fs: float, reversals=None) -> None:
         """Plot the acceleration curve(s) + cache source arrays for analysis."""
         # Remember whether analysis overlays were ON so a Generate/Update or
         # cutoff-change re-plot can restore them (mirrors chart_acczone's
@@ -846,6 +848,7 @@ class _ReversalContainerBase(QWidget):
         self.event_count = 0
         self.fail_count = 0
         self._plot_curve(data_df, color, fs)
+        self._prepared_reversals = reversals
         # Re-draw the overlays on the fresh curve if they were on before the
         # re-plot (the shared Analyze button stays pressed — don't drop them).
         if prev_active:
@@ -869,7 +872,8 @@ class _ReversalContainerBase(QWidget):
             saved.append((sub.axis_x.min(), sub.axis_x.max(),
                           sub.axis_y.min(), sub.axis_y.max()))
 
-        reversals_by_axis = self._compute_reversals_per_axis()
+        reversals_by_axis = (self._prepared_reversals if self._prepared_reversals is not None
+                             else self._compute_reversals_per_axis())
         total = 0
         failed = 0
         for sub, key in zip(self._subcharts, self._axis_keys()):

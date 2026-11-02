@@ -30,9 +30,9 @@ from chart_utils import (
 from chart_legend import ChartLegend
 from boundary_analysis import series_to_path, find_boundary_violations
 from sci_calculation import (
-    ProcessASTM, eggXY, eggXZ, eggYZ, eggXY_unclamped, eggXZ_unclamped, coef)
+    ProcessASTM, sampling_frequency, eggXY, eggXZ, eggYZ, eggXY_unclamped, eggXZ_unclamped, coef)
 from theme import (LINE_WIDTH_DEFAULT, LINE_WIDTH_FITTING, chart_tooltip_style,
-                   apply_chart_theme, MEASURED_POS_COLOR, MEASURED_NEG_COLOR)
+                   apply_chart_theme, theme_manager, MEASURED_POS_COLOR, MEASURED_NEG_COLOR)
 
 
 class ASTMChartView(QWidget):
@@ -191,6 +191,11 @@ class ASTMChartView(QWidget):
         """Re-apply palette to all 6 sub-charts on a theme switch."""
         for chart in self._charts.values():
             apply_chart_theme(chart)
+        for series in self._ref_series:
+            if series.property("themeReference"):
+                pen = series.pen()
+                pen.setColor(QColor(theme_manager.tokens['chart_axis']))
+                series.setPen(pen)
         # Refresh the wrapping legends' label text colour for the new theme.
         for legend in self._legends.values():
             legend.refresh_theme()
@@ -201,7 +206,7 @@ class ASTMChartView(QWidget):
 
     def addplotxyz(self, data, restraint: str, cond: str,
                    input_height: int, color: str | None = None,
-                   prone: bool = False) -> None:
+                   prone: bool = False, sustained=None) -> None:
         """Plot measured data and ASTM reference curves.
 
         ``color`` (hex) drives the measured (+) traces and the egg overlays.
@@ -224,63 +229,71 @@ class ASTMChartView(QWidget):
         # consistently with the ± traces (per user request).
         egg_color = MEASURED_POS_COLOR
 
-        # Process data at various dt values
-        d0p, d0n = ProcessASTM(data, 5)
-        d1p, d1n = ProcessASTM(data, 10)
-        d2p, d2n = ProcessASTM(data, 25)
-        d3p, d3n = ProcessASTM(data, 50)
-        d7p, d7n = ProcessASTM(data, 100)
-        d03p, d03n = ProcessASTM(data, 150)
-        d04p, d04n = ProcessASTM(data, 200)
-        d4p, d4n = ProcessASTM(data, 250)
-        d5p, d5n = ProcessASTM(data, 500)
-        d9p, d9n = ProcessASTM(data, 1000)
-        d6p, d6n = ProcessASTM(data, 2000)
-        d10p, d10n = ProcessASTM(data, 2500)
-        d77p, d77n = ProcessASTM(data, 3000)
-        d99p, d99n = ProcessASTM(data, 3500)
-        d88p, d88n = ProcessASTM(data, 4000)
-        d111p, d111n = ProcessASTM(data, 4500)
-        d8p, d8n = ProcessASTM(data, 7000)
+        # The split Eggplot canvas has no sustained charts. Avoid seventeen
+        # rolling-window passes on data it never displays.
+        if any(name in self._charts for name in ('ax', 'ay', 'az')):
+            fs = sampling_frequency(data)
+            def calculate(duration):
+                if sustained is not None:
+                    return sustained[duration]
+                return ProcessASTM(data, max(1, round(fs * duration)))
+            # Process data at various dt values
+            d0p, d0n = calculate(0.01)
+            d1p, d1n = calculate(0.02)
+            d2p, d2n = calculate(0.05)
+            d3p, d3n = calculate(0.1)
+            d7p, d7n = calculate(0.2)
+            d03p, d03n = calculate(0.3)
+            d04p, d04n = calculate(0.4)
+            d4p, d4n = calculate(0.5)
+            d5p, d5n = calculate(1)
+            d9p, d9n = calculate(2)
+            d6p, d6n = calculate(4)
+            d10p, d10n = calculate(5)
+            d77p, d77n = calculate(6)
+            d99p, d99n = calculate(7)
+            d88p, d88n = calculate(8)
+            d111p, d111n = calculate(9)
+            d8p, d8n = calculate(14)
 
-        x_axis = [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,
-                  1, 2, 4, 5, 6, 7, 8, 9, 14]
+            x_axis = [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,
+                      1, 2, 4, 5, 6, 7, 8, 9, 14]
 
-        # ax chart
-        self._add_data_line("ax", x_axis,
-            [d0p[0], d1p[0], d2p[0], d3p[0], d7p[0], d03p[0], d04p[0],
-             d4p[0], d5p[0], d9p[0], d6p[0], d10p[0], d77p[0], d99p[0],
-             d88p[0], d111p[0], d8p[0]],
-            "Measured ax (+)", measured_pos)
-        self._add_data_line("ax", x_axis,
-            [d0n[0], d1n[0], d2n[0], d3n[0], d7n[0], d03n[0], d04n[0],
-             d4n[0], d5n[0], d9n[0], d6n[0], d10n[0], d77n[0], d99n[0],
-             d88n[0], d111n[0], d8n[0]],
-            "Measured ax (-)", measured_neg)
+            # ax chart
+            self._add_data_line("ax", x_axis,
+                [d0p[0], d1p[0], d2p[0], d3p[0], d7p[0], d03p[0], d04p[0],
+                 d4p[0], d5p[0], d9p[0], d6p[0], d10p[0], d77p[0], d99p[0],
+                 d88p[0], d111p[0], d8p[0]],
+                "Measured ax (+)", measured_pos)
+            self._add_data_line("ax", x_axis,
+                [d0n[0], d1n[0], d2n[0], d3n[0], d7n[0], d03n[0], d04n[0],
+                 d4n[0], d5n[0], d9n[0], d6n[0], d10n[0], d77n[0], d99n[0],
+                 d88n[0], d111n[0], d8n[0]],
+                "Measured ax (-)", measured_neg)
 
-        # ay chart
-        self._add_data_line("ay", x_axis,
-            [d0p[1], d1p[1], d2p[1], d3p[1], d7p[1], d03p[1], d04p[1],
-             d4p[1], d5p[1], d9p[1], d6p[1], d10p[1], d77p[1], d99p[1],
-             d88p[1], d111p[1], d8p[1]],
-            "Measured ay (Right)", measured_pos)
-        self._add_data_line("ay", x_axis,
-            [-d0n[1], -d1n[1], -d2n[1], -d3n[1], -d7n[1], -d03n[1],
-             -d04n[1], -d4n[1], -d5n[1], -d9n[1], -d6n[1], -d10n[1],
-             -d77n[1], -d99n[1], -d88n[1], -d111n[1], -d8n[1]],
-            "Measured ay (Left)", measured_neg)
+            # ay chart
+            self._add_data_line("ay", x_axis,
+                [d0p[1], d1p[1], d2p[1], d3p[1], d7p[1], d03p[1], d04p[1],
+                 d4p[1], d5p[1], d9p[1], d6p[1], d10p[1], d77p[1], d99p[1],
+                 d88p[1], d111p[1], d8p[1]],
+                "Measured ay (Right)", measured_pos)
+            self._add_data_line("ay", x_axis,
+                [-d0n[1], -d1n[1], -d2n[1], -d3n[1], -d7n[1], -d03n[1],
+                 -d04n[1], -d4n[1], -d5n[1], -d9n[1], -d6n[1], -d10n[1],
+                 -d77n[1], -d99n[1], -d88n[1], -d111n[1], -d8n[1]],
+                "Measured ay (Left)", measured_neg)
 
-        # az chart
-        self._add_data_line("az", x_axis,
-            [d0p[2], d1p[2], d2p[2], d3p[2], d7p[2], d03p[2], d04p[2],
-             d4p[2], d5p[2], d9p[2], d6p[2], d10p[2], d77p[2], d99p[2],
-             d88p[2], d111p[2], d8p[2]],
-            "Measured az (Down)", measured_pos)
-        self._add_data_line("az", x_axis,
-            [d0n[2], d1n[2], d2n[2], d3n[2], d7n[2], d03n[2], d04n[2],
-             d4n[2], d5n[2], d9n[2], d6n[2], d10n[2], d77n[2], d99n[2],
-             d88n[2], d111n[2], d8n[2]],
-            "Measured az (Up)", measured_neg)
+            # az chart
+            self._add_data_line("az", x_axis,
+                [d0p[2], d1p[2], d2p[2], d3p[2], d7p[2], d03p[2], d04p[2],
+                 d4p[2], d5p[2], d9p[2], d6p[2], d10p[2], d77p[2], d99p[2],
+                 d88p[2], d111p[2], d8p[2]],
+                "Measured az (Down)", measured_pos)
+            self._add_data_line("az", x_axis,
+                [d0n[2], d1n[2], d2n[2], d3n[2], d7n[2], d03n[2], d04n[2],
+                 d4n[2], d5n[2], d9n[2], d6n[2], d10n[2], d77n[2], d99n[2],
+                 d88n[2], d111n[2], d8n[2]],
+                "Measured az (Up)", measured_neg)
 
         # Egg plots — measured data
         x_data = data.iloc[:, 1].values
@@ -571,6 +584,10 @@ class ASTMChartView(QWidget):
         axes = self._axes[chart_name]
         s = QLineSeries()
         s.setName(name)
+        if pen.color() == QColor("black"):
+            pen = QPen(pen)
+            pen.setColor(QColor(theme_manager.tokens['chart_axis']))
+            s.setProperty("themeReference", True)
         s.setPen(pen)
 
         # Convert data
@@ -593,9 +610,10 @@ class ASTMChartView(QWidget):
             return
         axes = self._axes[chart_name]
         chart = self._charts[chart_name]
-        pen = QPen(QColor("black"), 3)
+        pen = QPen(QColor(theme_manager.tokens['chart_axis']), 1.2)
 
         h = QLineSeries()
+        h.setProperty("themeReference", True)
         h.append(QPointF(x1, 0))
         h.append(QPointF(x2, 0))
         h.setPen(pen)
@@ -605,6 +623,7 @@ class ASTMChartView(QWidget):
         self._ref_series.append(h)
 
         v = QLineSeries()
+        v.setProperty("themeReference", True)
         v.append(QPointF(0, y1))
         v.append(QPointF(0, y2))
         v.setPen(pen)
@@ -1079,7 +1098,7 @@ class ASTMChartView(QWidget):
                 continue
             axis, side = axis_side
             curve = limits[axis][side]
-            pts = s.pointsVector()
+            pts = s.points()
             if not pts:
                 continue
             chart = s.chart()

@@ -107,7 +107,9 @@ def create_line_series(
     # This is an accepted trade-off for the large per-frame speed-up (a
     # 27000-point × 3-axis line scrolls ~5× faster under GL).
     try:
-        series.setUseOpenGL(True)
+        from PySide6.QtGui import QGuiApplication
+        if len(x_data) >= 2000 and QGuiApplication.platformName() != "offscreen":
+            series.setUseOpenGL(True)
     except Exception:
         pass
     return series

@@ -69,25 +69,25 @@ def ProcessASTM(data, dt):
     # empty after dropna(), and np.max(np.maximum([], floor)) raises ValueError
     # ("zero-size array"). Fall back to the floor value (no +sustained evidence).
     rmin_x = pd.Series(x_array).rolling(dt).min().dropna().values
-    lstx1 = round(float(np.max(np.maximum(rmin_x, 0.0))), 4) if rmin_x.size else 0.0
+    lstx1 = round(float(max(np.max(rmin_x), 0.0)), 4) if rmin_x.size else 0.0
 
     rmin_y = pd.Series(y_array).rolling(dt).min().dropna().values
-    lsty1 = round(float(np.max(np.maximum(rmin_y, 0.0))), 4) if rmin_y.size else 0.0
+    lsty1 = round(float(max(np.max(rmin_y), 0.0)), 4) if rmin_y.size else 0.0
 
     rmin_z = pd.Series(z_array).rolling(dt).min().dropna().values
-    lstz1 = round(float(np.max(np.maximum(rmin_z, 1.0))), 4) if rmin_z.size else 1.0
+    lstz1 = round(float(max(np.max(rmin_z), 1.0)), 4) if rmin_z.size else 1.0
 
     # ---- −sustained: per-window max, clamped to the axis ceiling, then min ---
     # ax / ay ceiling at 0; az ceiling at 1 (gravity). az result is returned in
     # the 1 g-referenced frame (consistent with lstz1).
     rmax_x = pd.Series(x_array).rolling(dt).max().dropna().values
-    xn = round(float(np.min(np.minimum(rmax_x, 0.0))), 4) if rmax_x.size else 0.0
+    xn = round(float(min(np.min(rmax_x), 0.0)), 4) if rmax_x.size else 0.0
 
     rmax_y = pd.Series(y_array).rolling(dt).max().dropna().values
-    yn = round(float(np.min(np.minimum(rmax_y, 0.0))), 4) if rmax_y.size else 0.0
+    yn = round(float(min(np.min(rmax_y), 0.0)), 4) if rmax_y.size else 0.0
 
     rmax_z = pd.Series(z_array).rolling(dt).max().dropna().values
-    zn = round(float(np.min(np.minimum(rmax_z, 1.0))), 4) if rmax_z.size else 1.0
+    zn = round(float(min(np.min(rmax_z), 1.0)), 4) if rmax_z.size else 1.0
 
     return [lstx1, lsty1, lstz1], [xn, yn, zn]
 
@@ -96,52 +96,16 @@ def ProcessASTM(data, dt):
 
 
 def ProcessGB(data, dt):
-    # if dt > 999:
-    #     x = min(int(dt / 50),90)
-    # else:
+    """GB uses the same sustained extrema as ASTM for the Y/Z axes."""
+    pos, neg = ProcessASTM(data, dt)
+    return pos[1:], neg[1:]
 
 
-    y_array = list(data.iloc[:, 2].values)
-    z_array = list(data.iloc[:, 3].values)
-    m = len(y_array)
+def sampling_frequency(data):
+    """Infer Hz from timestamps, without assuming a 500 Hz acquisition."""
+    time = data.iloc[:, 0].to_numpy(dtype=float)
+    return 1.0 / float(np.median(np.diff(time))) if len(time) > 1 else 500.0
 
-   # maxp = np.max(list(map(lambda i: [max(min(y_array[i:i + dt]), 0), max(min(z_array[i:i + dt]), 1)], range(m - dt))),
-      #            axis=0)
-   # maxn = np.min(list(map(lambda i: [min(max(y_array[i:i + dt]), 0), min(max(z_array[i:i + dt]), 1)], range(m - dt))),
-          #        axis=0)
-
-    # Guard against short recordings: when len(data) < dt, rolling().dropna()
-    # is empty and np.max([]) raises ValueError. Fall back to the axis floor
-    # (y floor 0, z floor 1).
-    _yp_vals = pd.Series(y_array).rolling(dt).min().dropna().tolist()
-    # 与被注释的原实现一致：+持续加速度钳制到轴下限（ay 下限 0），跨零振荡
-    # 的大窗口不再报出负值（同 ProcessASTM 的 np.maximum(rmin, 0) 修复）。
-    yp = round(max(np.max(_yp_vals), 0), 4) if _yp_vals else 0
-
-
-    lsty2 = pd.Series(y_array).rolling(dt).max().dropna()
-
-    lsty2 = lsty2[(lsty2 < 0)]
-
-    if len(lsty2) > 0:
-        yn = round(np.min(lsty2),4)
-    else:
-        yn = 0
-
-    _zp_vals = pd.Series(z_array).rolling(dt).min().dropna().tolist()
-    # az 下限为 1（1g 重力偏置），与原实现 max(min(...), 1) 一致。
-    zp = round(max(np.max(_zp_vals), 1), 4) if _zp_vals else 1
-    lstz2 = (pd.Series(z_array) - 1).rolling(dt).max().dropna()
-    lstz2 = lstz2[(lstz2 < 0)]
-    if len(lstz2) > 0:
-
-        zn = round(np.min(lstz2) + 1, 4)
-    else:
-        zn = 1
-
-
-   # print (maxp,maxn, [yp, zp],[yn,zn])
-    return [yp, zp],[yn,zn]
 
 def append4(x1,x2,x3,x4):
     x=np.append(x1,x2)
@@ -305,18 +269,33 @@ def detect_z_acceleration_reversal(z_data, time_data, fs, deadband=0.05):
     """
     z_data = np.asarray(z_data)
     time_data = np.asarray(time_data)
+    if len(z_data) != len(time_data):
+        raise ValueError("Acceleration and time arrays must have matching lengths")
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError("Sampling frequency must be positive")
 
     # Window sizes in samples
     window_duration = 0.133  # seconds
     pre_window_duration = 0.2  # seconds
-    window_size = int(window_duration * fs)
-    pre_window_size = int(pre_window_duration * fs)
+    window_size = max(1, int(window_duration * fs))
+    pre_window_size = max(1, int(pre_window_duration * fs))
 
     all_reversals = []
     n = len(z_data)
 
-    # Slide through the data with 0.133s window
-    for i in range(n - window_size + 1):
+    if n < window_size + pre_window_size:
+        return []
+    # Rolling extrema reject quiet windows in C before entering the Python
+    # event loop. Long pre-trigger recordings otherwise scan every window.
+    signal = pd.Series(z_data)
+    minima = signal.rolling(window_size).min().to_numpy()[window_size - 1:]
+    maxima = signal.rolling(window_size).max().to_numpy()[window_size - 1:]
+    candidates = np.flatnonzero((minima < 0) & (maxima > 2))
+    for i in candidates:
+        # A full 0.2s sustained pre-window is required. The previous max(0,...)
+        # accepted just one preceding sample at the beginning of a recording.
+        if i < pre_window_size:
+            continue
         # Get the current window
         window_start_idx = i
         window_end_idx = i + window_size - 1
@@ -325,8 +304,8 @@ def detect_z_acceleration_reversal(z_data, time_data, fs, deadband=0.05):
         window_time = time_data[window_start_idx:window_end_idx + 1]
 
         # Condition 1: the window must span both below 0 and above 2.
-        min_val = np.min(window_data)
-        max_val = np.max(window_data)
+        min_val = minima[i]
+        max_val = maxima[i]
         if min_val >= 0 or max_val <= 2:
             continue
 

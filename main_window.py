@@ -13,13 +13,13 @@ import sys
 import numpy as np
 
 from PySide6.QtCharts import QChartView
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QIcon, QColor, QCursor, QAction
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QIcon, QColor, QCursor, QAction, QActionGroup
 from PySide6.QtWidgets import (
     QToolBar, QWidget, QFileDialog, QStatusBar,
     QLabel, QFrame, QToolButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
-    QApplication,
+    QApplication, QScrollArea, QMenu,
 )
 
 import qfluentwidgets as qfw
@@ -39,6 +39,7 @@ from chart_astm import ASTMChartView
 from chart_reversal import ZReversalChartView, XYReversalChartView
 from sci_calculation import allowance_at_t0
 from nav_icons import NavIcon
+from processing_controller import ProcessingController
 from theme import DATASET_COLORS, theme_manager
 
 # When frozen by PyInstaller, __file__ points inside the temp _MEIxxxxx
@@ -209,11 +210,11 @@ class BertFluentWindow(FluentWindow):
         # A subtle bottom border separates the bar from the page content.
         self._top_bar.setStyleSheet(
             "#topBar { border-bottom: 1px solid rgba(128,128,128,90); }")
-        self._top_bar_layout = QHBoxLayout(self._top_bar)
-        self._top_bar_layout.setContentsMargins(10, 2, 10, 2)
-        self._top_bar_layout.setSpacing(6)
+        self._top_bar_layout = QVBoxLayout(self._top_bar)
+        self._top_bar_layout.setContentsMargins(16, 8, 16, 8)
+        self._top_bar_layout.setSpacing(8)
         # Height: enough for a toolbar row (combo/spinbox ~ 24px + margins).
-        self._top_bar_h = 34
+        self._top_bar_h = 100
         # Reserve room below the title bar for this bar in the content column.
         try:
             lm, tm, rm, bm = self.widgetLayout.getContentsMargins()
@@ -246,7 +247,7 @@ class BertFluentWindow(FluentWindow):
         bar.setGeometry(nav_w, tb_h, self.width() - nav_w, h)
         bar.raise_()
 
-    def topBarLayout(self) -> QHBoxLayout:
+    def topBarLayout(self) -> QVBoxLayout:
         """Return the top bar's content layout (for subclasses to populate)."""
         return self._top_bar_layout
 
@@ -270,6 +271,12 @@ class BertFluentWindow(FluentWindow):
         self._ctrl_panel_layout = QVBoxLayout(self._ctrl_panel)
         self._ctrl_panel_layout.setContentsMargins(10, 8, 10, 8)
         self._ctrl_panel_layout.setSpacing(6)
+        self._ctrl_scroll = QScrollArea(self)
+        self._ctrl_scroll.setObjectName("analysisScroll")
+        self._ctrl_scroll.setWidgetResizable(True)
+        self._ctrl_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._ctrl_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._ctrl_scroll.setWidget(self._ctrl_panel)
         self._position_control_panel()
 
     def _position_control_panel(self) -> None:
@@ -303,30 +310,21 @@ class BertFluentWindow(FluentWindow):
         except Exception:
             # Fallback: a fixed offset (7 tabs × 36px + header) if the scan fails.
             top_y = (self.titleBar.height() if self.titleBar else 48) + 7 * 36 + 10
-        # Use the panel's sizeHint height (set once its controls are laid out);
-        # before that, fall back to a compact height.
-        h = panel.sizeHint().height()
-        if h <= 0:
-            h = 120
-        panel.setGeometry(0, top_y, nav_w, h)
-        panel.raise_()
+        scroll = getattr(self, "_ctrl_scroll", None)
+        if scroll is not None:
+            # The navigation can collapse on a narrow window. A full settings
+            # form must never be squeezed into its 48px icon rail.
+            scroll.setVisible(nav_w >= 180)
+            available = self.height() - self.statusBar().height() - top_y - 8
+            scroll.setGeometry(8, top_y, max(0, nav_w - 16), max(0, available))
+            scroll.raise_()
 
     def controlPanelLayout(self) -> QVBoxLayout:
         """Return the control panel's content layout (for subclasses)."""
         return self._ctrl_panel_layout
 
 
-class _DummyData:
-    """Minimal stand-in for an AccData object, used only by the chart warmup.
-
-    ``toggle_analysis`` only reads ``.filename`` (for colour lookup) and the
-    cached arrays in the chart, so a tiny object with that attribute suffices.
-    """
-    def __init__(self, filename: str = "warmup"):
-        self.filename = filename
-
-
-class MainWindow(BertFluentWindow):
+class MainWindow(ProcessingController, BertFluentWindow):
     """BERT_READER X main window — FluentWindow + Qt Charts."""
 
     def __init__(self):
@@ -334,6 +332,7 @@ class MainWindow(BertFluentWindow):
         self.version = "3.1"
         self.setWindowTitle("BERT_READER X")
         self.resize(1600, 900)
+        self.setMinimumSize(1100, 720)
 
         # State
         self.plottype = "Standard"
@@ -382,7 +381,8 @@ class MainWindow(BertFluentWindow):
         # Narrow the expanded panel (default 322px) so the charts get more
         # room. The labels are short (e.g. "ASTM Sustained", "GB Contour"),
         # so ~200px is plenty at the app's font size.
-        self.navigationInterface.setExpandWidth(200)
+        self.navigationInterface.setExpandWidth(224)
+        self.navigationInterface.setMinimumExpandWidth(1000)
         self.navigationInterface.expand(useAni=False)
         # Reposition the top bar when the nav panel expands/collapses so it
         # always starts to the RIGHT of the nav (clear of the collapse button).
@@ -398,49 +398,10 @@ class MainWindow(BertFluentWindow):
         theme_manager.changed.connect(self._on_theme_changed)
         # Apply current theme immediately (covers re-entrancy on toggle).
         self._on_theme_changed(theme_manager.mode)
+        self._init_processing()
 
-        # Warm up the chart render caches so the FIRST real interaction (e.g.
-        # clicking Analyze, which adds a batch of QScatterSeries/QAreaSeries)
-        # isn't delayed by Qt Charts' one-time cold-start layout + paint cost.
-        # Deferred to after the window is shown so it doesn't block startup.
-        QTimer.singleShot(0, self._warmup_chart_render)
-
-    def _warmup_chart_render(self) -> None:
-        """Prime Qt Charts' render path with a throwaway analysis round-trip.
-
-        Qt Charts pays a one-time cost the first time it lays out + paints a
-        batch of mixed series types (QScatterSeries / QAreaSeries / QLineSeries
-        attached to value axes) — recompute tick ranges, build the scene graph,
-        first paintEvent. That cost is felt by the user as a freeze on the
-        first Analyze click. We trigger it here with a tiny synthetic trace
-        (add → analyse → clear) so the real first click is as fast as the
-        second. The dummy data is fully removed afterwards.
-        """
-        import numpy as np
-        try:
-            # Only warm up when no real data is loaded yet (the startup case).
-            # If the user has already plotted curves, skip — we must not wipe
-            # their data. The render caches warm naturally on first plot anyway.
-            if self.datalist:
-                return
-            tp = self.trendplot
-            import pandas as pd
-            tp = self.trendplot
-            # Synthetic 0.5s trace at 200 Hz — just enough to exercise the
-            # rolling() path and every overlay series type once.
-            n = 100
-            t = np.linspace(0.0, 0.5, n)
-            x = np.sin(2 * np.pi * 5 * t)
-            df = pd.DataFrame({"Time": t, "x": x, "y": x, "z": x})
-            tp.initplotxyz()
-            tp.addplotxyz(df, plot_order=99, color="#888888")
-            tp.reset_view()
-            tp.toggle_analysis([_DummyData()], "Standard", {}, window=0.1)
-            tp.toggle_analysis([_DummyData()], "Standard", {}, window=0.1)
-            tp.initplotxyz()
-        except Exception as e:
-            # Warmup is best-effort; never let it crash startup.
-            print(f"chart warmup skipped: {e}")
+        # Real chart rendering warms naturally when data is loaded. Keeping
+        # startup free of synthetic plots also leaves the empty state stable.
 
     def _on_theme_changed(self, _mode: str) -> None:
         """Refresh chart palettes after a light/dark switch.
@@ -451,7 +412,14 @@ class MainWindow(BertFluentWindow):
         Only the Qt Charts layer needs a manual nudge because charts live on
         a QGraphicsScene and ignore QSS.
         """
+        if hasattr(self, 'theme_toggle'):
+            self.theme_toggle.blockSignals(True)
+            self.theme_toggle.setChecked(theme_manager.is_dark)
+            self.theme_toggle.blockSignals(False)
+            self._theme_toggle_icon = FI.QUIET_HOURS if theme_manager.is_dark else FI.BRIGHTNESS
         self.refresh_theme()
+        if hasattr(self, '_processing_state'):
+            self._set_processing_state(self._processing_state, self._workspace_title.toolTip())
 
     def refresh_theme(self) -> None:
         """Re-apply chart palettes + non-Fluent widget QSS after a theme switch.
@@ -596,7 +564,7 @@ class MainWindow(BertFluentWindow):
         container = QWidget(self)
         container.setObjectName("rightPanelHost")
         cl = QVBoxLayout(container)
-        cl.setContentsMargins(0, tb_h + top_bar_h, 0, 0)
+        cl.setContentsMargins(0, tb_h + top_bar_h, 0, self.statusBar().sizeHint().height())
         cl.setSpacing(0)
         cl.addWidget(panel, 1)
         self.hBoxLayout.addWidget(container)
@@ -619,6 +587,14 @@ class MainWindow(BertFluentWindow):
         lay.setSpacing(0)
         for tb in toolbars:
             lay.addWidget(tb)
+        page._chart_content = central
+        page._pending_label = QLabel(page)
+        page._pending_label.setObjectName('pendingChart')
+        page._pending_label.setTextFormat(Qt.TextFormat.PlainText)
+        page._pending_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        page._pending_label.setWordWrap(True)
+        lay.addWidget(page._pending_label, 1)
+        page._pending_label.hide()
         lay.addWidget(central, 1)
         return page
 
@@ -633,6 +609,7 @@ class MainWindow(BertFluentWindow):
         self.theme_toggle.setToolTip("Toggle light / dark theme")
         self.theme_toggle.setStatusTip("Toggle light / dark theme")
         self.theme_toggle.setCheckable(True)
+        self.theme_toggle.setChecked(theme_manager.is_dark)
         self.theme_toggle.toggled.connect(self._toggle_theme)
         # index 3 = just before the min/max/close buttons group.
         self.addTitleBarWidget(self.theme_toggle, index=3)
@@ -666,6 +643,7 @@ class MainWindow(BertFluentWindow):
         """
         tb = QToolBar(name)
         tb.setMovable(False)
+        tb.setIconSize(QSize(16, 16))
         tb.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         return tb
 
@@ -701,6 +679,7 @@ class MainWindow(BertFluentWindow):
         btn.setStatusTip(action.statusTip() or action.text())
         btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         btn.setAutoRaise(True)
+        btn.setIconSize(QSize(16, 16))
         # Connect both triggered paths (click + action re-emit).
         btn.clicked.connect(action.trigger)
         action.changed.connect(
@@ -718,84 +697,98 @@ class MainWindow(BertFluentWindow):
         return action.icon()
 
     def _build_top_bar(self) -> None:
-        """Populate the persistent top bar with global controls.
-
-        Holds: Add Raw/Accel Data, Clear All, a shared data selector (which
-        fans out to every per-page select_plot_tab*), a live Cutoff SpinBox,
-        and the Annot-mode control + readouts. These were previously on the
-        Trend-only global toolbar; the top bar makes them available everywhere.
-        """
+        """Two deliberate rows: file actions, then the active analysis input."""
         lay = self.topBarLayout()
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        title = QLabel("Acceleration workspace")
+        title.setObjectName("workspaceTitle")
+        self._workspace_title = title
+        title.setMinimumWidth(120)
+        title.setMaximumWidth(220)
+        actions.addWidget(title)
+        actions.addStretch(1)
+        self._data_actions = []
+        self._import_actions = []
+        for icon, text, slot, needs_data in [
+            (FI.FOLDER_ADD, "Add raw data", self.open_raw_data, False),
+            (FI.ADD, "Add accel data", self.open_accel_data, False),
+            (FI.SHARE, "Export all", self._export_all_to_sup, True),
+            (FI.DOCUMENT, "Report", self._show_report_dialog, True),
+        ]:
+            action = Action(icon, text, self)
+            action.triggered.connect(slot)
+            actions.addWidget(self._tb_button_for(action))
+            if needs_data:
+                self._data_actions.append(action)
+            else:
+                self._import_actions.append(action)
+        clear = Action(FI.DELETE, "Clear all", self)
+        clear.triggered.connect(lambda: self.reset_trend(reset_datalist=True))
+        actions.addWidget(self._tb_button_for(clear))
+        self._data_actions.append(clear)
+        lay.addLayout(actions)
 
-        # --- Data actions ---
-        a_raw = Action(FI.FOLDER_ADD, "Add Raw Data", self)
-        a_raw.setStatusTip("Add raw accelerometer data (GB + ASTM)")
-        a_raw.triggered.connect(self.open_raw_data)
-        lay.addWidget(self._tb_button_for(a_raw))
-
-        a_accel = Action(FI.ADD, "Add Accel Data", self)
-        a_accel.setStatusTip("Add standard acceleration data")
-        a_accel.triggered.connect(self.open_accel_data)
-        lay.addWidget(self._tb_button_for(a_accel))
-
-        a_clear = Action(FI.DELETE, "Clear All", self)
-        a_clear.setStatusTip("Clear all datasets")
-        a_clear.triggered.connect(lambda: self.reset_trend(reset_datalist=True))
-        lay.addWidget(self._tb_button_for(a_clear))
-
-        a_export = Action(FI.SHARE, "Export All", self)
-        a_export.setStatusTip("Export all loaded datasets to .sup files")
-        a_export.triggered.connect(self._export_all_to_sup)
-        lay.addWidget(self._tb_button_for(a_export))
-
-        lay.addWidget(self._vline())
-
-        # --- Shared data selector (single source of truth; fans out to pages) ---
-        lay.addWidget(QLabel("Data:"))
+        inputs = QHBoxLayout()
+        inputs.setSpacing(10)
+        inputs.addWidget(QLabel("Dataset"))
         self.select_data = ComboBox()
-        self.select_data.setMinimumWidth(180)
-        lay.addWidget(self.select_data)
-
-        # --- Generate/Update (acts on the currently-visible page's chart) ---
-        a_gen = Action(FI.ACCEPT, "Generate/Update", self)
-        a_gen.setStatusTip(
-            "Plot the selected dataset on the current chart tab")
-        a_gen.triggered.connect(self._generate_active_page)
-        lay.addWidget(self._tb_button_for(a_gen))
-
-        lay.addWidget(self._vline())
-
-        # --- Live Cutoff SpinBox (replaces the modal CutoffFrequencyDialog) ---
-        lay.addWidget(QLabel("Cutoff:"))
+        self.select_data.setMinimumWidth(150)
+        self.select_data.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                       QSizePolicy.Policy.Fixed)
+        self.select_data.setToolTip("Active dataset for the standard and reversal charts")
+        inputs.addWidget(self.select_data, 1)
+        self._generate_button = PrimaryPushButton("Update charts")
+        self._generate_button.setToolTip("Refresh all analysis charts for the selected dataset")
+        self._generate_button.clicked.connect(self._generate_active_page)
+        inputs.addWidget(self._generate_button)
+        inputs.addWidget(self._vline())
+        inputs.addWidget(QLabel("Low-pass"))
         self.cutoff_spin = SpinBox()
         self.cutoff_spin.setRange(1, 249)
         self.cutoff_spin.setValue(self.cutoff)
         self.cutoff_spin.setSuffix(" Hz")
-        self.cutoff_spin.setStatusTip(
-            "Low-pass filter cutoff (Hz). Acc Zone always uses 1 Hz regardless.")
-        self.cutoff_spin.valueChanged.connect(self._on_cutoff_changed)
-        lay.addWidget(self.cutoff_spin)
+        self.cutoff_spin.setFixedWidth(120)
+        self.cutoff_spin.setToolTip("Low-pass cutoff. Acceleration Zone always uses 1 Hz.")
+        self.cutoff_spin.setKeyboardTracking(False)
+        self.cutoff_spin.valueChanged.connect(self._schedule_cutoff_change)
+        inputs.addWidget(self.cutoff_spin)
+        lay.addLayout(inputs)
+        self._cutoff_timer = QTimer(self)
+        self._cutoff_timer.setSingleShot(True)
+        self._cutoff_timer.setInterval(250)
+        self._cutoff_timer.timeout.connect(
+            lambda: self._on_cutoff_changed(self.cutoff_spin.value()))
 
-        lay.addWidget(self._vline())
-
-        # --- Annot mode + readouts ---
-        a_annot = Action(FI.TAG, "Annot", self)
-        a_annot.setStatusTip("Switch annotation mode")
-        a_annot.triggered.connect(self.switch_annot_mode)
-        lay.addWidget(self._tb_button_for(a_annot))
-
-        self.annot_label = InfoBadge.info(self.annot_mode, parent=self)
-        self.annot_label.setFixedHeight(22)
-        lay.addWidget(self.annot_label)
-
+        # Keep secondary readouts out of the command rows.
+        self.annot_label = QLabel(f"Annotations: {self.annot_mode}")
         self.status_label = QLabel()
-        self.status_label.setFixedHeight(22)
-        lay.addWidget(self.status_label)
-
-        lay.addStretch(1)
-
-        # Wire the shared selector to fan out to every per-page combo.
+        self.statusBar().addPermanentWidget(self.annot_label)
+        self.statusBar().addPermanentWidget(self.status_label)
         self._wire_data_selector_sync()
+        self._update_workspace_state()
+
+    def _update_workspace_state(self) -> None:
+        loaded = bool(self.datalist)
+        for action in getattr(self, '_data_actions', []):
+            action.setEnabled(loaded)
+        self._generate_button.setEnabled(loaded)
+        self.select_data.setEnabled(loaded)
+        if not loaded:
+            self.select_data.setText("Add a dataset to begin")
+        self.select_data.setToolTip(self.select_data.currentText())
+        empty = getattr(self, '_trend_empty', None)
+        if empty is not None:
+            empty.setVisible(not loaded)
+            self.trendplot.setVisible(loaded)
+
+    def _schedule_cutoff_change(self, _frequency: int) -> None:
+        if hasattr(self, '_jobs') and self.datalist:
+            self._refresh_timer.stop()
+            self._mark_charts_outdated(trend=True)
+        self._cutoff_timer.start()
+        if hasattr(self, '_jobs'):
+            self._update_job_controls()
 
     def _wire_data_selector_sync(self) -> None:
         """One-way sync: top-bar ``select_data`` → every per-page combo.
@@ -808,6 +801,8 @@ class MainWindow(BertFluentWindow):
         def _fanout(text):
             if text is None:
                 return
+            self.select_data.setToolTip(text)
+            self.sidebar.select_filename(text)
             for cb in self._data_combos:
                 if cb.currentText() == text:
                     continue
@@ -817,24 +812,9 @@ class MainWindow(BertFluentWindow):
         self.select_data.currentTextChanged.connect(_fanout)
 
     def _on_cutoff_changed(self, freq: int) -> None:
-        """Live cutoff: re-filter + re-plot Trend immediately.
-
-        Replaces the modal CutoffFrequencyDialog's OK chain: store the value,
-        refresh the readouts, clear the Trend canvas + sidebar, and re-plot
-        every dataset at the new cutoff. Reversal pages pick up the new cutoff
-        on their next Generate (they re-apply filter_data themselves). AccZone
-        is unaffected (always 1 Hz). No-op during bulk selector repopulation
-        (set_datalist blocks the spinbox's signals there).
-        """
-        try:
-            self.set_cutoff(int(freq))
-            self.trendplot.initplotxyz()
-            self.clear_sidebar()
-            self.replot_all()
-            self.statusBar().showMessage(f"Cutoff frequency set to {freq} Hz",
-                                         3000)
-        except Exception as e:
-            print(f"Cutoff change error: {e}")
+        """The debounced cutoff is filtered by the background preparation job."""
+        self.set_cutoff(int(freq))
+        self.request_chart_update(force=True)
 
     def _toggle_theme(self, checked: bool) -> None:
         """checked == True → dark mode."""
@@ -851,6 +831,8 @@ class MainWindow(BertFluentWindow):
         analysis is shown re-applies it with the new window.
         """
         if not self.datalist:
+            return
+        if self.trendplot._analysis_active == checked:
             return
         window = 0.2
         if getattr(self, "_analyze_window_spin", None) is not None:
@@ -879,103 +861,92 @@ class MainWindow(BertFluentWindow):
     # ------------------------------------------------------------------
 
     def _setup_trend_page(self) -> None:
-        """Build the Trend nav page (the app's home page).
-
-        Holds the plot-type/fit actions + the manual-shift + chart-tools row,
-        then the trend chart. (Global Add/Clear/Cutoff/Annot actions live in
-        the persistent top bar, not here.)
-        """
-        # Row 0: plot-type + Fit Max/Min. Action-only so the toolbar's
-        # built-in "»" overflow menu kicks in cleanly when the window is
-        # narrow — no embedded widgets to render badly in the overflow.
-        tb = self._mk_toolbar("Trend Toolbar")
-
-        tb.addAction(Action("Raw Data", self,
-                            triggered=lambda: self.switch_plot_type("Raw")))
-        tb.addAction(Action("Filter Only", self,
-                            triggered=lambda: self.switch_plot_type("Filter")))
-        tb.addAction(Action("Filter && Calibrate", self,
-                            triggered=lambda: self.switch_plot_type("Standard")))
+        tb = self._mk_toolbar("Trend view")
+        self._plot_type_actions = {}
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for text, value in [("Raw", "Raw"), ("Filtered", "Filter"),
+                            ("Calibrated", "Standard")]:
+            action = Action(text, self)
+            action.setCheckable(True)
+            action.setChecked(self.plottype == value)
+            action.triggered.connect(lambda checked=False, v=value: self.switch_plot_type(v))
+            group.addAction(action)
+            tb.addAction(action)
+            self._plot_type_actions[value] = action
         tb.addSeparator()
-        tb.addAction(Action("Fit Max X", self,
-                            triggered=lambda: self.switch_to_fitmax(axis=1)))
-        tb.addAction(Action("Fit Max Y", self,
-                            triggered=lambda: self.switch_to_fitmax(axis=2)))
-        tb.addAction(Action("Fit Max Z", self,
-                            triggered=lambda: self.switch_to_fitmax(axis=3)))
+        fit = QToolButton()
+        fit.setText("Align peaks")
+        fit.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(fit)
+        for which in ('Max', 'Min'):
+            for axis, name in enumerate('XYZ', 1):
+                callback = self.switch_to_fitmax if which == 'Max' else self.switch_to_fitmin
+                menu.addAction(f"{which} {name}", lambda checked=False, a=axis, cb=callback: cb(a))
+        fit.setMenu(menu)
+        tb.addWidget(fit)
+        annotate = Action(FI.TAG, "Annotate", self)
+        annotate.triggered.connect(self.switch_annot_mode)
+        tb.addAction(annotate)
+        _add_chart_toolbar(tb, self.trendplot)
 
-        tb.addSeparator()
-        tb.addAction(Action("Fit Min X", self,
-                            triggered=lambda: self.switch_to_fitmin(axis=1)))
-        tb.addAction(Action("Fit Min Y", self,
-                            triggered=lambda: self.switch_to_fitmin(axis=2)))
-        tb.addAction(Action("Fit Min Z", self,
-                            triggered=lambda: self.switch_to_fitmin(axis=3)))
-
-        # Generate Report lives at the end of the fit row (after Fit Min Z) so
-        # the report action sits with the per-trend analysis actions rather
-        # than on the global data-actions row.
-        tb.addSeparator()
-        action_report = Action(FI.DOCUMENT, "Generate Report", self)
-        action_report.triggered.connect(self._show_report_dialog)
-        tb.addAction(action_report)
-
-        # Row 2: manual time-shift (combo + spinbox + Apply/Reset) and the
-        # chart toolbox (zoom/pan/reset). Kept on its own toolbar so the
-        # combo/spinbox never get pushed into an overflow menu (they render
-        # badly there) and stay usable at any window width.
-        tb_shift = self._mk_toolbar("Trend Shift")
-
-        # Manual time-shift: pick one dataset, shift it by N seconds
-        # (display-only — does not mutate the stored AccData frames).
-        tb_shift.addWidget(QLabel("  Shift:  "))
+        tb_shift = self._mk_toolbar("Time alignment")
+        tb_shift.addWidget(QLabel(" Shift "))
         self._shift_combo = ComboBox()
-        self._shift_combo.setMinimumWidth(120)
+        self._shift_combo.setMinimumWidth(90)
+        self._shift_combo.setMaximumWidth(180)
         self._shift_combo.setToolTip("Select a dataset to shift in time")
         tb_shift.addWidget(self._shift_combo)
-
         self._shift_spin = DoubleSpinBox()
         self._shift_spin.setRange(-10000.0, 10000.0)
         self._shift_spin.setDecimals(3)
         self._shift_spin.setSingleStep(0.001)
         self._shift_spin.setSuffix(" s")
-        self._shift_spin.setToolTip("Seconds to shift the selected dataset "
-                                    "(positive = earlier)")
+        self._shift_spin.setFixedWidth(140)
+        self._shift_spin.setToolTip("Display shift in seconds; positive moves the trace earlier")
         tb_shift.addWidget(self._shift_spin)
-
-        self._shift_apply = PrimaryPushButton("Apply")
+        self._shift_apply = PushButton("Apply")
         self._shift_apply.clicked.connect(self._apply_manual_shift)
         tb_shift.addWidget(self._shift_apply)
-
         self._shift_reset = PushButton("Reset")
         self._shift_reset.clicked.connect(self._reset_manual_shift)
         tb_shift.addWidget(self._shift_reset)
 
-        tb_shift.addSeparator()
-
-        # Chart toolbox (zoom / pan / reset) shares the SAME row as Shift.
-        _add_chart_toolbar(tb_shift, self.trendplot)
-
-        # Sustained-peak sliding-window width (seconds) — drives the region
-        # highlight drawn by Analyze (the Analyze button itself is the shared
-        # one in the control panel; it routes to _toggle_analysis on this page).
-        # Editable live; default 0.2 s.
-        self._analyze_window_spin = DoubleSpinBox(tb_shift)
+        self._analyze_window_spin = DoubleSpinBox(self._ctrl_panel)
         self._analyze_window_spin.setRange(0.001, 60.0)
         self._analyze_window_spin.setDecimals(3)
         self._analyze_window_spin.setSingleStep(0.1)
         self._analyze_window_spin.setSuffix(" s")
         self._analyze_window_spin.setValue(0.2)
-        self._analyze_window_spin.setMinimumWidth(95)
-        self._analyze_window_spin.setToolTip(
-            "Sustained-peak sliding-window width (seconds)")
-        self._analyze_window_spin.valueChanged.connect(
-            self._on_analysis_window_changed)
-        tb_shift.addWidget(self._analyze_window_spin)
+        self._analyze_window_spin.setKeyboardTracking(False)
+        self._analyze_window_spin.setToolTip("Trend sustained-peak window")
+        self._analyze_window_spin.valueChanged.connect(self._on_analysis_window_changed)
 
-        # Assemble the page: 3 toolbars above the chart.
-        page = self._make_page("page_trend", [tb, tb_shift],
-                               self.trendplot)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        self._trend_empty = QWidget()
+        self._trend_empty.setObjectName("emptyState")
+        empty_layout = QVBoxLayout(self._trend_empty)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title = QLabel("Start with an acceleration recording")
+        title.setObjectName("emptyTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint = QLabel("Load a raw DAQ file or a standard .sup recording.\n"
+                      "Compare traces, inspect peaks, and review all seven analysis views.")
+        hint.setObjectName("secondaryText")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setWordWrap(True)
+        add = PrimaryPushButton("Add raw data")
+        add.clicked.connect(self.open_raw_data)
+        empty_layout.addWidget(title)
+        empty_layout.addWidget(hint)
+        empty_layout.addSpacing(12)
+        empty_layout.addWidget(add, 0, Qt.AlignmentFlag.AlignHCenter)
+        content_layout.addWidget(self._trend_empty, 1)
+        content_layout.addWidget(self.trendplot, 1)
+        self.trendplot.hide()
+        page = self._make_page("page_trend", [tb, tb_shift], content)
         self.addSubInterface(page, NavIcon.TREND, "Trend")
 
     # ------------------------------------------------------------------
@@ -1033,6 +1004,9 @@ class MainWindow(BertFluentWindow):
         Reversal handler (which previously read its own _xr_* copies).
         """
         lay = self.controlPanelLayout()
+        heading = QLabel("ANALYSIS SETTINGS")
+        heading.setObjectName("sectionHeading")
+        lay.addWidget(heading)
 
         # --- Restraint type ---
         lay.addWidget(QLabel("Restraint:"))
@@ -1069,7 +1043,9 @@ class MainWindow(BertFluentWindow):
         self._prone_btn.toggled.connect(self._on_prone_toggled)
         lay.addWidget(self._prone_btn)
 
-        lay.addStretch(1)
+        lay.addWidget(QLabel("Trend window"))
+        lay.addWidget(self._analyze_window_spin)
+        lay.addSpacing(6)
 
         # --- Shared Analyze button (routes to the visible page's handler) ---
         self._analyze_btn = ToggleToolButton(self._ctrl_panel)
@@ -1079,6 +1055,7 @@ class MainWindow(BertFluentWindow):
             "Analyze the currently-visible chart (switch tabs to analyze another)")
         self._analyze_btn.toggled.connect(self._toggle_active_page_analysis)
         lay.addWidget(self._analyze_btn)
+        lay.addStretch(1)
 
         # Re-sync the Analyze button's checked state when the user switches
         # pages (each canvas tracks its own analysis on/off state).
@@ -1098,15 +1075,29 @@ class MainWindow(BertFluentWindow):
         if page is None:
             return None
         name = page.objectName()
-        return {
-            "page_trend": self._toggle_analysis,
-            "page_astm_sust": self._toggle_sust_analysis,
-            "page_astm_egg": self._toggle_egg_analysis,
-            "page_gb": self._toggle_gb_analysis,
-            "page_acczone": lambda c: self.canvasAccZone.toggle_analysis(c),
-            "page_zreversal": self._toggle_zreversal_analysis,
-            "page_xyreversal": self._toggle_xyreversal_analysis,
+        entry = {
+            "page_trend": (self._toggle_analysis, self.trendplot, '_data_by_dataset'),
+            "page_astm_sust": (self._toggle_sust_analysis, self.canvasASTMSust, '_last_egg_data'),
+            "page_astm_egg": (self._toggle_egg_analysis, self.canvasASTMEgg, '_last_egg_data'),
+            "page_gb": (self._toggle_gb_analysis, self.canvasGB, '_last_comb_data'),
+            "page_acczone": (self.canvasAccZone.toggle_analysis, self.canvasAccZone, '_last_data'),
+            "page_zreversal": (self._toggle_zreversal_analysis, self.canvasZReversal, '_cached_data'),
+            "page_xyreversal": (self._toggle_xyreversal_analysis, self.canvasXYReversal, '_cached_data'),
         }.get(name)
+        if entry is None:
+            return None
+        handler, canvas, field = entry
+
+        def dispatch(checked):
+            if checked and hasattr(self, '_jobs') and not self._page_is_current():
+                self._queue_chart_refresh()
+                return
+            source = getattr(canvas, field, None)
+            if checked and (source is None or len(source) == 0):
+                self.statusBar().showMessage("Update charts before analyzing this view", 4000)
+                return
+            handler(checked)
+        return dispatch
 
     def _toggle_active_page_analysis(self, checked: bool) -> None:
         """Global Analyze toggle: set the global state + apply to the visible page.
@@ -1116,7 +1107,20 @@ class MainWindow(BertFluentWindow):
         turning it OFF clears analysis everywhere. Each page's own on/off is
         driven by this global state, so the button stays consistent across tabs.
         """
+        if checked and not self.datalist:
+            self._analyze_btn.blockSignals(True)
+            self._analyze_btn.setChecked(False)
+            self._analyze_btn.blockSignals(False)
+            return
         self._analyze_global_on = checked
+        if not checked:
+            for handler in (self._toggle_analysis, self._toggle_sust_analysis,
+                            self._toggle_egg_analysis, self._toggle_gb_analysis,
+                            self.canvasAccZone.toggle_analysis,
+                            self._toggle_zreversal_analysis,
+                            self._toggle_xyreversal_analysis):
+                handler(False)
+            return
         handler = self._analyze_dispatch()
         if handler is not None:
             handler(checked)
@@ -1129,6 +1133,8 @@ class MainWindow(BertFluentWindow):
         across tab switches — it reflects the GLOBAL intent, not per-canvas state.
         """
         if not getattr(self, "_analyze_global_on", False):
+            return
+        if hasattr(self, '_jobs') and not self._page_is_current():
             return
         page = self.stackedWidget.currentWidget()
         if page is None:
@@ -1184,53 +1190,18 @@ class MainWindow(BertFluentWindow):
         self._refresh_egg_summary()
 
     def _on_prone_toggled(self, _checked: bool) -> None:
-        """Re-plot the ASTM charts immediately when the prone posture is toggled.
+        self._queue_chart_refresh()
 
-        Prone only affects the ASTM egg shapes (XY/XZ base eggs) and the
-        sustained ax- limit line — NOT GB/AccZone/Reversal — so we regenerate
-        just the two ASTM canvases instead of the full _generate_active_page
-        sweep (which re-runs the expensive ProcessASTM/ProcessGB passes on all
-        five tabs and freezes the UI for a second on every toggle).
-        """
-        if self.datalist:
-            try:
-                self._generate_astm_both()
-            except Exception as e:
-                print(f"ASTM generate error (prone): {e}")
-            self.statusBar().showMessage(
-                "Re-plotted ASTM for prone posture", 3000)
+    def _plot_error(self, context: str, error: Exception) -> None:
+        message = f"{context}: {error}"
+        errors = getattr(self, '_generation_errors', None)
+        if errors is not None:
+            errors.append(message)
+        self.statusBar().showMessage(message, 8000)
 
     def _generate_active_page(self) -> None:
-        """Re-plot the selected dataset on EVERY chart tab at once.
-
-        The data selector + Generate are global (top bar), so one click refreshes
-        all six chart canvases from the current selection: ASTM Sustained+Egg
-        (shared via _generate_astm_both), GB, AccZone, Z Reversal, X/Y Reversal.
-        Trend auto-plots all datasets (no Generate), so it's untouched here.
-        """
-        try:
-            # _generate_astm_both plots BOTH the Sustained and Egg canvases.
-            self._generate_astm_both()
-        except Exception as e:
-            print(f"ASTM generate error: {e}")
-        try:
-            self._generate_gb()
-        except Exception as e:
-            print(f"GB generate error: {e}")
-        try:
-            self._generate_acczone()
-        except Exception as e:
-            print(f"AccZone generate error: {e}")
-        try:
-            self._generate_zreversal()
-        except Exception as e:
-            print(f"Z Reversal generate error: {e}")
-        try:
-            self._generate_xyreversal()
-        except Exception as e:
-            print(f"X/Y Reversal generate error: {e}")
-        self.statusBar().showMessage(
-            "Generated all charts for the selected dataset", 3000)
+        """Prepare all numeric results off-thread, then draw the visible view."""
+        self.request_chart_update(force=True)
 
     def _toggle_egg_analysis(self, checked: bool) -> None:
         """Toggle egg analysis + refresh the toolbar summary readout."""
@@ -1405,7 +1376,7 @@ class MainWindow(BertFluentWindow):
             if self._canvas_analysis_active("canvasAccZone"):
                 self.canvasAccZone.toggle_analysis(True)
         except Exception as e:
-            print(f"AccZone plot error: {e}")
+            self._plot_error("AccZone plot", e)
 
     def _refresh_gb_summary(self) -> None:
         """Rebuild the GB-page coloured "Fail X" labels from failed rules.
@@ -1607,7 +1578,7 @@ class MainWindow(BertFluentWindow):
                 self.canvasZReversal.toggle_analysis(True)
             self._refresh_zreversal_summary()
         except Exception as e:
-            print(f"Z reversal plot error: {e}")
+            self._plot_error("Z reversal plot", e)
 
     def _generate_xyreversal(self) -> None:
         """Re-plot the X/Y-reversal charts from the current data + tab plottype."""
@@ -1648,7 +1619,7 @@ class MainWindow(BertFluentWindow):
                 self.canvasXYReversal.toggle_analysis(True)
             self._refresh_xyreversal_summary()
         except Exception as e:
-            print(f"X/Y reversal plot error: {e}")
+            self._plot_error("X/Y reversal plot", e)
 
     def _toggle_zreversal_analysis(self, checked: bool) -> None:
         """Toggle Z-reversal overlays + refresh the toolbar summary."""
@@ -1748,6 +1719,8 @@ class MainWindow(BertFluentWindow):
         self._repopulate_data_selectors()
         # Keep the trend-tab shift selector in sync with the dataset list.
         self._refresh_shift_combo()
+        self._update_workspace_state()
+        self._queue_chart_refresh()
 
     def _repopulate_data_selectors(self) -> None:
         """Rebuild every data selector (top bar + hidden per-page mirrors).
@@ -1759,6 +1732,7 @@ class MainWindow(BertFluentWindow):
         per-combo.
         """
         keys = list(self.datadict.keys())
+        previous = self.select_data.currentText()
         # Repopulate the top-bar selector (source of truth) without triggering
         # its fan-out mid-rebuild.
         sd = getattr(self, "select_data", None)
@@ -1773,7 +1747,7 @@ class MainWindow(BertFluentWindow):
             cb.blockSignals(False)
         # Pick a sensible current item: keep the previous selection if still
         # present, else the first (or empty).
-        cur = sd.currentText() if sd is not None and sd.count() > 0 else ""
+        cur = previous
         if cur not in keys:
             cur = keys[0] if keys else ""
         for cb in self._data_combos:
@@ -1783,6 +1757,7 @@ class MainWindow(BertFluentWindow):
         if sd is not None:
             sd.setCurrentText(cur)
             sd.blockSignals(False)
+        self.sidebar.select_filename(cur)
 
     def _unique_filename(self, filename: str) -> str:
         """Return *filename* made unique against already-loaded datasets.
@@ -1920,6 +1895,7 @@ class MainWindow(BertFluentWindow):
             d.filter_data(cutoff=self.cutoff)
             self.add_trend_data(data=d, plottype=self.plottype, plot_order=i)
             i += 1
+        self._queue_chart_refresh()
 
     def replot_single(self, name: str) -> None:
         d = self.datadict[name]
@@ -1933,6 +1909,8 @@ class MainWindow(BertFluentWindow):
 
     def switch_plot_type(self, plottype: str) -> None:
         self.plottype = plottype
+        if plottype in getattr(self, '_plot_type_actions', {}):
+            self._plot_type_actions[plottype].setChecked(True)
         self._update_status_label()
         # initplotxyz clears analysis overlays; reflect that in the button.
         if getattr(self, "_analyze_btn", None) is not None:
@@ -1954,10 +1932,12 @@ class MainWindow(BertFluentWindow):
             # Fallback to the full rebuild if the in-place path hits a problem
             # (e.g. series count mismatch after a partial state).
             self.trendplot.initplotxyz()
+            self.clear_sidebar()
             self.replot_all()
         # Refresh the sidebar stat tables for the new plot type in place
         # (no card rebuild — keeps the swatch/eye/title/buttons untouched).
         self.sidebar.update_plottype(plottype)
+        self._queue_chart_refresh()
 
     def switch_to_fitmax(self, axis: int) -> None:
         """Align every dataset's MAX (peak) on the given axis.
@@ -2102,7 +2082,7 @@ class MainWindow(BertFluentWindow):
             color = self.dataset_colors.get(name)
             canvas.addplotxyz(data=self._select_data(data), color=color)
         except Exception as e:
-            print(f"GB plot error: {e}")
+            self._plot_error("GB plot", e)
 
     def plotGB_checkbox(self, canvas, name: str) -> None:
         try:
@@ -2126,7 +2106,7 @@ class MainWindow(BertFluentWindow):
                 prone=self._prone_btn.isChecked(),
             )
         except Exception as e:
-            print(f"ASTM plot error: {e}")
+            self._plot_error("ASTM plot", e)
 
     def plotASTM_checkbox(self, canvas, name: str) -> None:
         try:
@@ -2153,14 +2133,18 @@ class MainWindow(BertFluentWindow):
         self.trendplot.initplotxyz()
         self.replot_all()
         self._repopulate_data_selectors()
+        self._update_workspace_state()
 
     def reset_trend(self, reset_datalist: bool = False) -> None:
+        self._reset_processing()
         try:
             if reset_datalist:
                 self.datalist.clear()
                 self.data_namelist.clear()
                 self.datadict.clear()
                 self.dataset_colors.clear()
+                self.dataset_visibility.clear()
+                self._refresh_shift_combo()
                 self._repopulate_data_selectors()
 
             self.trendplot.initplotxyz()
@@ -2198,6 +2182,7 @@ class MainWindow(BertFluentWindow):
             self._refresh_zreversal_summary()
             self._refresh_xyreversal_summary()
             self.clear_sidebar()
+            self._update_workspace_state()
         except Exception as e:
             print(f"Reset error: {e}")
 
@@ -2206,58 +2191,20 @@ class MainWindow(BertFluentWindow):
     # ==================================================================
 
     def open_accel_data(self) -> None:
-        fileName, _ = QFileDialog.getOpenFileName(
-            self, "Open Acceleration Data File", self._last_open_dir,
-            "Supported data (*.sup *.sups *.txt *.csv *.dat);;All Files (*)"
-        )
-        if fileName:
-            # Remember this file's folder for the next open dialog.
-            self._last_open_dir = os.path.dirname(fileName)
-            try:
-                data = accdata.AccData(fileName, cutoff=self.cutoff)
-                self.set_datalist(data)
-                self.add_trend_data(
-                    data=self.datalist[-1],
-                    plottype=self.plottype,
-                    plot_order=len(self.datalist),
-                )
-                self.statusBar().showMessage(f"Loaded: {data.filename}", 4000)
-            except Exception as e:
-                print(f"Open accel error: {e}")
-                self.statusBar().showMessage(f"Error: {e}", 6000)
+        filenames, _ = QFileDialog.getOpenFileNames(
+            self, "Open Acceleration Data Files", self._last_open_dir,
+            "Supported data (*.sup *.sups *.txt *.csv *.dat);;All Files (*)")
+        if filenames:
+            self._last_open_dir = os.path.dirname(filenames[0])
+            self._start_import(filenames, raw=False)
 
     def open_raw_data(self) -> None:
-        fileName, _ = QFileDialog.getOpenFileName(
-            self, "Open Raw Data File", self._last_open_dir,
-            "Supported data (*.sup *.sups *.txt *.csv *.dat);;All Files (*)"
-        )
-        if fileName:
-            # Remember this file's folder for the next open dialog.
-            self._last_open_dir = os.path.dirname(fileName)
-        if fileName:
-            try:
-                data = accdata.RawData(fileName)
-                data_GB, data_ASTM = data.export_data()
-                for d in (data_GB, data_ASTM):
-                    d.reformat(overwrite=True, setting_angle=True,
-                               pitch_angle=0, seatback_angle=0, roll_angle=0,
-                               yaw_angle=0, cutoff=self.cutoff)
-                self.set_datalist(data_GB)
-                self.set_datalist(data_ASTM)
-
-                for i in [-2, -1]:
-                    self.add_trend_data(
-                        data=self.datalist[i], plottype=self.plottype,
-                        plot_order=len(self.datalist) + i + 1,
-                    )
-                self.statusBar().showMessage(
-                    f"Loaded raw: {os.path.basename(fileName)}", 4000)
-            except Exception as e:
-                print(f"Open raw error: {e}")
-                # 与 open_accel_data 对齐：打包版无控制台，print 用户看不到，
-                # 必须在状态栏给出带文件名的错误提示。
-                self.statusBar().showMessage(
-                    f"Error: {os.path.basename(fileName)}: {e}", 6000)
+        filenames, _ = QFileDialog.getOpenFileNames(
+            self, "Open Raw Data Files", self._last_open_dir,
+            "Supported data (*.sup *.sups *.txt *.csv *.dat);;All Files (*)")
+        if filenames:
+            self._last_open_dir = os.path.dirname(filenames[0])
+            self._start_import(filenames, raw=True)
 
     def _export_all_to_sup(self) -> None:
         """Export every loaded dataset to a .sup file in one go.
@@ -2355,4 +2302,4 @@ class MainWindow(BertFluentWindow):
         self.trendplot.set_annotation_mode(self.annot_mode)
         self.canvasZReversal.set_annotation_mode(self.annot_mode)
         self.canvasXYReversal.set_annotation_mode(self.annot_mode)
-        self.annot_label.setText(f"  ({self.annot_mode})  ")
+        self.annot_label.setText(f"Annotations: {self.annot_mode}")

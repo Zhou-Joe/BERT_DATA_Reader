@@ -29,7 +29,7 @@ def series_to_path(series) -> Path | None:
     Returns None if the series has fewer than 3 points (not a real loop).
     """
     try:
-        pts = series.pointsVector()
+        pts = series.points()
     except Exception:
         return None
     if len(pts) < 3:

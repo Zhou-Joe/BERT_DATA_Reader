@@ -421,7 +421,7 @@ class AccZoneChartView(BaseChartView):
     # Data plotting
     # ------------------------------------------------------------------
 
-    def addplotxyz(self, data, color: str | None = None) -> None:
+    def addplotxyz(self, data, color: str | None = None, classification=None) -> None:
         """Overlay measured acceleration data on the zone chart.
 
         ``color`` (hex) drives the measured trace; falls back to legacy blue.
@@ -459,7 +459,7 @@ class AccZoneChartView(BaseChartView):
         # big-point markers + label without recomputing. The overlays are only
         # shown if analysis is currently active (default OFF).
         self._last_data = data
-        zn, t0, t1 = self.classify_zone(data)
+        zn, t0, t1 = classification if classification is not None else self.classify_zone(data)
         self._last_run = (zn, t0, t1) if zn is not None else None
         if self._analysis_active:
             self._apply_analysis()
@@ -606,71 +606,12 @@ class AccZoneChartView(BaseChartView):
         breaks the run. matplotlib.path.Path.contains_points does the
         point-in-polygon test, vectorised over all points at once.
         """
-        none = (None, None, None)
         if not self._zone_paths:
-            return none
-        try:
-            t_arr = np.asarray(data.iloc[:, 0].values, dtype=float)
-            x_arr = np.asarray(data.iloc[:, 1].values, dtype=float)
-            z_arr = np.asarray(data.iloc[:, 3].values, dtype=float)
-        except Exception as e:
-            print(f"classify_zone: could not read columns: {e}")
-            return none
-        n = len(t_arr)
-        if n < 2:
-            return none
-
-        pts = np.column_stack([x_arr, z_arr])
-
-        # Per-zone membership (a point is inside exactly one zone; the zones
-        # tile the plane). Computed once, then accumulated outward.
-        member: dict[int, np.ndarray] = {}
-        for zn in (5, 4, 3, 2):
-            paths = self._zone_paths.get(zn)
-            m = np.zeros(n, dtype=bool)
-            if paths:
-                for p in paths:
-                    m |= p.contains_points(pts)
-            member[zn] = m
-
-        # Check zones from the lowest-priority/most-severe (5) inward; first
-        # zone with a >threshold contiguous inside-run wins.
-        #
-        # When judging zone N, a contiguous span counts if its points fall in
-        # zone N OR any MORE-severe (outer) zone (N+1 .. 5). So a curve that
-        # straddles zone 4 and zone 5 is evaluated as ONE combined run when
-        # judging zone 4 — the zone-5-only portion may be too short to qualify
-        # on its own, but the combined span can exceed the threshold. We
-        # accumulate membership outward: ``in_run`` grows by OR-ing each outer
-        # zone's points in turn.
-        # Zone 1 is the catch-all: if none of 5→2 qualifies, the ride is in
-        # Zone 1 by elimination (no run scan — it'd be slow for a huge all-Z1
-        # trace, and the time window is meaningless for the catch-all). The
-        # fast path returns zone 1 with t_start=t_end=None to signal "no run
-        # label needed, just draw the outline".
-        in_run = np.zeros(n, dtype=bool)
-        for zn in (5, 4, 3, 2):
-            in_run |= member[zn]        # in_run = points in zone {zn..5}
-            if not in_run.any():
-                continue
-            # Find contiguous True runs; check each run's duration.
-            # (Run-finding via diff of the boolean array: boundaries where
-            # in_run flips. A run [start,end] is all-True and lasts
-            # t[end]-t[start]; we require it strictly > AUTO_ZONE_DUR.)
-            idx = np.flatnonzero(in_run)
-            # Split idx into contiguous groups (gaps > 1 sample break a run).
-            breaks = np.where(np.diff(idx) > 1)[0]
-            groups = np.split(idx, breaks + 1)
-            for grp in groups:
-                if len(grp) < 2:
-                    continue
-                start, end = int(grp[0]), int(grp[-1])
-                if t_arr[end] - t_arr[start] > AUTO_ZONE_DUR:
-                    return zn, float(t_arr[start]), float(t_arr[end])
-
-        # None of zones 5→2 qualified → Zone 1 (catch-all). No run scan, no
-        # time window (the caller skips the run label for this case).
-        return 1, None, None
+            return None, None, None
+        from analysis_pipeline import classify_zone
+        polygons = {zone: [path.vertices for path in paths]
+                    for zone, paths in self._zone_paths.items()}
+        return classify_zone(data, polygons, AUTO_ZONE_DUR)
 
     def highlight_zone(self, zone_num: int | None) -> None:
         """Mark the classified zone WITHOUT altering the zone fills.
@@ -757,15 +698,15 @@ class AccZoneChartView(BaseChartView):
 
     def _on_data_clicked(self, point: QPointF) -> None:
         """Show tooltip on data point click."""
-        # Find point index for time estimation
-        if self._data_line is not None:
-            pts = self._data_line.points()
-            idx = 0
-            for i, p in enumerate(pts):
-                if abs(p.x() - point.x()) < 1e-6 and abs(p.y() - point.y()) < 1e-6:
-                    idx = i
-                    break
-            text = f"t ≈ {idx / self._last_fs:.3f}s\nx = {point.x():.4f}\nz = {point.y():.4f}"
+        # Read source timestamps, including pre-trigger/shifted origins. Avoid
+        # copying every Qt point into Python for each click on a large trace.
+        if self._data_line is not None and self._last_data is not None:
+            values = self._last_data.iloc[:, [1, 3]].to_numpy()
+            matches = np.flatnonzero((np.abs(values[:, 0] - point.x()) < 1e-6) &
+                                     (np.abs(values[:, 1] - point.y()) < 1e-6))
+            idx = int(matches[0]) if len(matches) else 0
+            time = float(self._last_data.iloc[idx, 0])
+            text = f"t ≈ {time:.3f}s\nx = {point.x():.4f}\nz = {point.y():.4f}"
         else:
             text = f"x = {point.x():.4f}\nz = {point.y():.4f}"
 
