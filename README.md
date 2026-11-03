@@ -241,6 +241,15 @@ Internal tooling — © Disney / SARC test engineering. Not for redistribution.
 
 ## Development checks
 
+For existing SUP files exported from **512 Hz SensorConnect** recordings, use
+the recording sidebar's **+ Import → Legacy SensorConnect exports (512 Hz)**.
+Select multiple existing exports to keep their saved trims and samples while
+recalculating filters and analysis at 512 Hz. **Export all** to a separate folder
+to save copies with sampling-rate metadata; those copies can subsequently use
+the normal acceleration-data importer. This does not restore samples discarded
+by older importers or re-check the original auto-detected trim boundaries.
+Use this option only for recordings known to originate at 512 Hz.
+
 Run the numerical and headless Qt regression suite from the repository root:
 
 ```bash

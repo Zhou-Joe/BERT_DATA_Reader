@@ -307,6 +307,8 @@ class DataSidebar(QWidget):
         menu = QMenu(add)
         menu.addAction('Raw DAQ data...', parent.open_raw_data)
         menu.addAction('Acceleration data...', parent.open_accel_data)
+        menu.addAction('Legacy SensorConnect exports (512 Hz)...',
+                       parent.open_legacy_sensorconnect_data)
         add.setMenu(menu)
         heading.addWidget(add)
         body_layout.addLayout(heading)

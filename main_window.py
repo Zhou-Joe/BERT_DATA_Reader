@@ -2207,6 +2207,14 @@ class MainWindow(ProcessingController, BertFluentWindow):
             self._last_open_dir = os.path.dirname(filenames[0])
             self._start_import(filenames, raw=True)
 
+    def open_legacy_sensorconnect_data(self) -> None:
+        filenames, _ = QFileDialog.getOpenFileNames(
+            self, 'Open legacy SensorConnect exports — known 512 Hz recordings',
+            self._last_open_dir, 'SensorConnect SUP exports (*.sup *.sups)')
+        if filenames:
+            self._last_open_dir = os.path.dirname(filenames[0])
+            self._start_import(filenames, raw='sensorconnect_sup')
+
     def open_sensorconnect_data(self) -> None:
         """SensorConnect 软件导出的单传感器 CSV（Time + 三通道 X/Y/Z）。
 

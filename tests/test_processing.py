@@ -37,6 +37,30 @@ class ProcessingTests(unittest.TestCase):
         loop.exec()
         self.assertTrue(predicate(), 'Timed out waiting for worker state')
 
+    def test_acczone_clear_reload_discards_deleted_run_label(self):
+        from PySide6.QtCore import QCoreApplication, QEvent
+        self.load()
+        self.render_page(4)
+        self.refresh()
+        canvas = self.window.canvasAccZone
+        canvas.mark_run(canvas._last_data, 2, -1, 0)
+        self.assertIsNotNone(canvas._run_label_anchor)
+        self.window.reset_trend(reset_datalist=True)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        canvas._reposition_run_label()
+        self.load('new.sup')
+        self.refresh()
+        canvas._apply_equal_aspect()
+        self.assertEqual(self.window._processing_state, 'ready')
+        self.assertEqual(canvas._last_data.shape[0], 600)
+
+    def test_legacy_sensorconnect_picker_uses_explicit_512_batch_mode(self):
+        paths = ['lap1.sup', 'lap2.sup', 'lap3.sup']
+        with patch('main_window.QFileDialog.getOpenFileNames', return_value=(paths, '')), \
+             patch.object(self.window, '_start_import') as start:
+            self.window.open_legacy_sensorconnect_data()
+        start.assert_called_once_with(paths, raw='sensorconnect_sup')
+
     def test_calculations_run_on_worker_and_chart_mutations_on_gui(self):
         self.load()
         self.window.stackedWidget.setCurrentIndex(3)

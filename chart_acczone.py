@@ -314,6 +314,7 @@ class AccZoneChartView(BaseChartView):
         self._remove_analysis_overlays()
         self._analysis_active = False
         # Reset zone→area tracking + last-run cache for the new chart.
+        self._kept_refs = []
         self._zone_areas = {}
         self._zone_paths = {}
         self._zone_orig_colors = {}
@@ -500,6 +501,8 @@ class AccZoneChartView(BaseChartView):
 
     def _remove_analysis_overlays(self) -> None:
         """Strip the accent outlines, big-point markers, run label + overlay."""
+        # Axis and resize callbacks must stop using the label before Qt deletes it.
+        self._run_label_anchor = None
         # Accent outlines + overlay label.
         self.clear_highlight()
         # Big-point scatter + run label widgets.

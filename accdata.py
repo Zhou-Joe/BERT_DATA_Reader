@@ -6,7 +6,9 @@ import numpy as np
 import os
 import io
 class AccData:
-    def __init__(self, rawdata, path=None, is_raw=False, cutoff=5, *args, **kwargs):
+    def __init__(self, rawdata, path=None, is_raw=False, cutoff=5, *args,
+                 sampling_rate=None, **kwargs):
+        self._sampling_frequency_hint = sampling_rate
         if is_raw:
             self.cutoff=cutoff
             self.rawdata=rawdata.copy()
@@ -83,6 +85,11 @@ class AccData:
             self.get_angle()
             self.get_colID()
             self.parsie_cols()
+            if self._sampling_frequency_hint is None:
+                for value in self.rawdata.iloc[:self.start_idx, 0]:
+                    match = re.fullmatch(r'Sampling Rate \(Hz\):\s*([\d.]+)', str(value))
+                    if match:
+                        self._sampling_frequency_hint = float(match[1])
             self.calculate_sampling_frequency()  # Calculate actual sampling frequency
             self.get_offset()
             self.filter_data(cutoff=cutoff)
@@ -122,7 +129,7 @@ class AccData:
 
         # Calculate zero offset based on first 1 second of data
         # Use actual sampling frequency to determine number of points
-        num_points = min(self.fs, len(self.data))  # First 1 second = fs points
+        num_points = min(round(self.fs), len(self.data))  # First 1 second = fs points
         
         if num_points > 0:
             self.x_avg = self.data.iloc[:num_points, 1].mean()
@@ -196,21 +203,18 @@ class AccData:
     
     def calculate_sampling_frequency(self):
         """Calculate actual sampling frequency from time data"""
+        if self._sampling_frequency_hint is not None:
+            rate = float(self._sampling_frequency_hint)
+            if not np.isfinite(rate) or rate < 1:
+                raise ValueError('Sampling rate must be finite and at least 1 Hz')
+            self.fs = int(rate) if rate.is_integer() else rate
+            self.data.attrs['sampling_rate'] = self.fs
+            return
         try:
             if len(self.data) > 1:
                 time_interval = float(np.median(np.diff(self.data.iloc[:, 0])))
                 if time_interval > 0:
                     measured = 1.0 / time_interval
-                    prior = getattr(self, "fs", None)
-                    # 时间列按 4 位小数取整（0.0019531→0.0020），中位间隔
-                    # 无法区分 500 与 512 这类 <5% 的差异。数据集已带一个
-                    # 可信 fs（如 SensorConnect 从 CHANNEL_INFO 解析的 512）
-                    # 时，5% 以内的“测量值”视为取整噪声、保留原值；显著
-                    # 不同才采纳测量结果。
-                    if prior and abs(measured - prior) / prior < 0.05:
-                        print(f"Sampling frequency kept at {self.fs} Hz "
-                              f"(measured {measured:.1f} Hz within tolerance)")
-                        return
                     # Convert time interval to sampling frequency
                     self.fs = int(round(measured))
                     print(f"Detected sampling frequency: {self.fs} Hz (time interval: {time_interval:.6f}s)")
@@ -248,6 +252,9 @@ class AccData:
         standard.iloc[:, 1:] = standard.iloc[:, 1:].round(4)
         self.filtered_data = filtered
         self.std_data = standard
+        if self._sampling_frequency_hint is not None:
+            filtered.attrs['sampling_rate'] = self.fs
+            standard.attrs['sampling_rate'] = self.fs
         self.cutoff = cutoff
         # Remember the cutoff these frames were produced at so the next call
         # with the same cutoff is a no-op. Invalidated in reformat (data change)
@@ -275,6 +282,8 @@ class AccData:
                     zeropoint=zero_list[i]) - offset_list[i])
                 i += 1
         frame.iloc[:, 1:] = frame.iloc[:, 1:].round(4)
+        if self._sampling_frequency_hint is not None:
+            frame.attrs['sampling_rate'] = self.fs
         return frame
 
     def set_angle(self, pitch_angle, seatback_angle, roll_angle, yaw_angle):
@@ -291,7 +300,9 @@ class AccData:
             f"Seatback Angle: {self.seatback_angle}",
             f"Initial Roll Angle: {self.roll_angle}",
             f"Initial Yaw Angle: {self.yaw_angle}",
-            f"SARCcolumnIDs: {' '.join(self.columns)}", "",
+            f"SARCcolumnIDs: {' '.join(self.columns)}",
+            (f"Sampling Rate (Hz): {self.fs:g}"
+             if self._sampling_frequency_hint is not None else ""),
         ]
         header = pd.DataFrame(np.nan, index=range(6), columns=self.columns,
                               dtype=object)
@@ -461,9 +472,8 @@ class SensorConnectData:
                 f"实际 {raw.shape[1]} 列 / {len(raw)} 行")
 
         frame = pd.DataFrame()
-        # 逐样本 4 位小数取整：单样本抖动 ≤0.05ms、无累计漂移（与应用对
-        # .sup/CSV 的时间列处理一致）。
-        frame["Time"] = raw.iloc[:, 0].round(decimals=4)
+        # Preserve source precision so 512 Hz spacing is not rounded to 500 Hz.
+        frame["Time"] = pd.to_numeric(raw.iloc[:, 0], errors="coerce")
         # 该传感器的安装方向与应用约定相反：Y、Z 通道取反（静止时 Z 由
         # ≈-0.99g 翻成 ≈+0.99g，符合 +1g 重力约定；Y 同步翻转保持手性）。
         axis_signs = (1.0, -1.0, -1.0)
@@ -474,28 +484,28 @@ class SensorConnectData:
         frame = frame.dropna().reset_index(drop=True)
         if len(frame) < 2:
             raise RuntimeError("SensorConnect 数据为空（有效行不足）")
+        if not np.isfinite(frame.to_numpy()).all():
+            raise ValueError("SensorConnect data must contain finite numeric samples")
 
-        # 时间戳严格递增修复：传感器原始时间存在亚 0.1ms 抖动甚至倒退，
-        # 4 位小数取整后出现并列 —— parsie_cols 的严格递增校验会拒绝整
-        # 段数据（auto-trim 切出的第 4/9 段正是这种区间）。先钳制倒退
-        # （maximum.accumulate），再去重：并列时间戳只保留第一个样本
-        # （抖动重复本就是废样本，零失真；总重复 ~8.6k/2.88M，占比可忽略）。
+        # Keep the first increasing timestamp; skip duplicates and backwards
+        # jitter until the sensor clock catches up.
         tt = frame["Time"].to_numpy()
         tt = np.maximum.accumulate(tt)
         keep = np.concatenate(([True], np.diff(tt) > 0))
         if not keep.all():
             frame = frame.loc[keep].reset_index(drop=True)
         frame["Time"] = tt[keep] if not keep.all() else tt
+        if len(frame) < 2:
+            raise ValueError("SensorConnect needs at least two increasing timestamps")
 
-        # 采样率：优先 CHANNEL_INFO 声明；缺失时用未取整的原始时间差推导。
+        # Prefer metadata; otherwise infer from median valid spacing.
         fs = fs_hint
-        if not fs:
-            dt = float(raw.iloc[1, 0]) - float(raw.iloc[0, 0])
-            fs = round(1.0 / dt) if dt > 0 else 500
+        if not fs or not np.isfinite(fs) or fs <= 0:
+            fs = round(1.0 / float(np.median(np.diff(frame['Time']))))
 
         cols_str = "Time accel-x accel-y accel-z"
-        self.data = AccData(frame, is_raw=True, path=os.path.basename(path))
-        self.data.fs = int(fs)
+        self.data = AccData(frame, is_raw=True, path=os.path.basename(path),
+                            sampling_rate=int(round(fs)))
         self.data.set_colID(cols_str)
         self.fs = self.data.fs
 
@@ -797,9 +807,12 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
                    + pd.Series(y).rolling(win, center=True).std()
                    + pd.Series(z).rolling(win, center=True).std()).values
         flat_i = int(np.nanargmin(std_sum))
-        rx, ry, rz = (float(np.mean(x[flat_i:flat_i + win])),
-                      float(np.mean(y[flat_i:flat_i + win])),
-                      float(np.mean(z[flat_i:flat_i + win])))
+        # The rolling window is centered: use that same interval for its mean.
+        rest_start = max(0, flat_i - win // 2)
+        rest_end = rest_start + win
+        rx, ry, rz = (float(np.mean(x[rest_start:rest_end])),
+                      float(np.mean(y[rest_start:rest_end])),
+                      float(np.mean(z[rest_start:rest_end])))
     except Exception:
         rx, ry, rz = 0.0, 0.0, 1.0
     motion = np.sqrt((x - rx) ** 2 + (y - ry) ** 2 + (z - rz) ** 2)

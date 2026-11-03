@@ -103,6 +103,8 @@ def ProcessGB(data, dt):
 
 def sampling_frequency(data):
     """Infer Hz from timestamps, without assuming a 500 Hz acquisition."""
+    if data.attrs.get('sampling_rate') is not None:
+        return float(data.attrs['sampling_rate'])
     time = data.iloc[:, 0].to_numpy(dtype=float)
     return 1.0 / float(np.median(np.diff(time))) if len(time) > 1 else 500.0
 

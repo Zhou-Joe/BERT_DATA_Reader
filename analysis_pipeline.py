@@ -109,7 +109,9 @@ def import_recording(path, raw, cutoff, token, progress):
     """
     token.check()
     progress(5, 'Reading recording')
-    if raw == 'sensorconnect':
+    if raw == 'sensorconnect_sup':
+        data = (AccData(path, cutoff=cutoff, sampling_rate=512),)
+    elif raw == 'sensorconnect':
         data = SensorConnectData(path).export_data()
     elif raw:
         data = RawData(path).export_data()
