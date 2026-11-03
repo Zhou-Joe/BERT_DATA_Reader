@@ -704,7 +704,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         title = QLabel("Acceleration workspace")
         title.setObjectName("workspaceTitle")
         self._workspace_title = title
-        title.setMinimumWidth(120)
+        title.setMinimumWidth(80)
         title.setMaximumWidth(220)
         actions.addWidget(title)
         actions.addStretch(1)
@@ -713,6 +713,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         for icon, text, slot, needs_data in [
             (FI.FOLDER_ADD, "Add raw data", self.open_raw_data, False),
             (FI.ADD, "Add accel data", self.open_accel_data, False),
+            (FI.IOT, "SensorConnect", self.open_sensorconnect_data, False),
             (FI.SHARE, "Export all", self._export_all_to_sup, True),
             (FI.DOCUMENT, "Report", self._show_report_dialog, True),
         ]:
@@ -2205,6 +2206,20 @@ class MainWindow(ProcessingController, BertFluentWindow):
         if filenames:
             self._last_open_dir = os.path.dirname(filenames[0])
             self._start_import(filenames, raw=True)
+
+    def open_sensorconnect_data(self) -> None:
+        """SensorConnect 软件导出的单传感器 CSV（Time + 三通道 X/Y/Z）。
+
+        走与 raw/accel 相同的后台导入管线（raw='sensorconnect' 分支），
+        加载器解析 FILE_INFO/CHANNEL_INFO 元数据与 DATA_START 数据块，
+        并把 fs 校正为文件声明的采样率（如 512Hz）。
+        """
+        filenames, _ = QFileDialog.getOpenFileNames(
+            self, "Open SensorConnect Data Files", self._last_open_dir,
+            "SensorConnect export (*.csv);;All Files (*)")
+        if filenames:
+            self._last_open_dir = os.path.dirname(filenames[0])
+            self._start_import(filenames, raw='sensorconnect')
 
     def _export_all_to_sup(self) -> None:
         """Export every loaded dataset to a .sup file in one go.

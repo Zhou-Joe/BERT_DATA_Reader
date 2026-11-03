@@ -200,8 +200,19 @@ class AccData:
             if len(self.data) > 1:
                 time_interval = float(np.median(np.diff(self.data.iloc[:, 0])))
                 if time_interval > 0:
+                    measured = 1.0 / time_interval
+                    prior = getattr(self, "fs", None)
+                    # 时间列按 4 位小数取整（0.0019531→0.0020），中位间隔
+                    # 无法区分 500 与 512 这类 <5% 的差异。数据集已带一个
+                    # 可信 fs（如 SensorConnect 从 CHANNEL_INFO 解析的 512）
+                    # 时，5% 以内的“测量值”视为取整噪声、保留原值；显著
+                    # 不同才采纳测量结果。
+                    if prior and abs(measured - prior) / prior < 0.05:
+                        print(f"Sampling frequency kept at {self.fs} Hz "
+                              f"(measured {measured:.1f} Hz within tolerance)")
+                        return
                     # Convert time interval to sampling frequency
-                    self.fs = int(round(1.0 / time_interval))
+                    self.fs = int(round(measured))
                     print(f"Detected sampling frequency: {self.fs} Hz (time interval: {time_interval:.6f}s)")
                 else:
                     self.fs = 500  # Default fallback
@@ -396,6 +407,102 @@ def _csv_first_data_row(path: str, max_scan: int = 200) -> int:
     return 23
 
 
+class SensorConnectData:
+    """SensorConnect 软件导出的单传感器 CSV（三通道 X/Y/Z 加速度）。
+
+    实测文件结构（2.9M 行 / 217MB 样例）：
+      - FILE_INFO / SESSION_INFO / DEVICE_INFO / CHANNEL_INFO 元数据块；
+        CHANNEL_INFO 表的 SampleRate 列给出采样率（如 ``512Hz``）；
+      - ``DATA_START`` 行之后是列头行 ``Time,<addr>:ch1,<addr>:ch2,<addr>:ch3``，
+        再往后为「相对秒时间(9 位小数) + 三通道加速度(g)」逗号分隔数据。
+
+    元数据用逐行扫描只读到 DATA_START 为止（文件可能数百 MB）；数据块
+    一次 read_csv 载入。输出单个 AccData（列 Time/accel-x/y/z，fs 显式
+    覆盖 —— is_raw 构造默认 fs=500，512Hz 这类非整百采样率必须纠正，
+    否则滤波与持续窗的时长换算全部偏差 ~2.4%）。
+    """
+
+    def __init__(self, path, *args, **kwargs):
+        self.filename = path
+        data_header_row = None
+        fs_hint = None
+        try:
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+                row = 0
+                in_channels = False
+                for line in f:
+                    row += 1
+                    stripped = line.strip()
+                    if stripped == "CHANNEL_INFO":
+                        in_channels = True
+                        continue
+                    if in_channels and fs_hint is None:
+                        # 通道行形如 "40305:ch1,Timeseries,512Hz,,,,"
+                        parts = [p.strip() for p in stripped.split(",")]
+                        if len(parts) >= 3 and "Hz" in parts[2]:
+                            try:
+                                fs_hint = float(re.sub(r"[^\d.]", "", parts[2]))
+                            except ValueError:
+                                fs_hint = None
+                    if stripped == "DATA_START":
+                        data_header_row = row  # 下一行是 Time,ch1..ch3 列头
+                        break
+        except Exception as e:
+            raise RuntimeError(f"无法读取 SensorConnect 文件 {path}: {e}") from e
+        if data_header_row is None:
+            raise RuntimeError(
+                f"不是 SensorConnect 导出格式（未找到 DATA_START）: {path}")
+
+        raw = pd.read_csv(path, skiprows=data_header_row, header=0,
+                          index_col=False, sep=",", low_memory=False)
+        if raw.shape[1] < 4 or len(raw) < 2:
+            raise RuntimeError(
+                f"SensorConnect 数据不完整：需要 Time+3 通道，"
+                f"实际 {raw.shape[1]} 列 / {len(raw)} 行")
+
+        frame = pd.DataFrame()
+        # 逐样本 4 位小数取整：单样本抖动 ≤0.05ms、无累计漂移（与应用对
+        # .sup/CSV 的时间列处理一致）。
+        frame["Time"] = raw.iloc[:, 0].round(decimals=4)
+        # 该传感器的安装方向与应用约定相反：Y、Z 通道取反（静止时 Z 由
+        # ≈-0.99g 翻成 ≈+0.99g，符合 +1g 重力约定；Y 同步翻转保持手性）。
+        axis_signs = (1.0, -1.0, -1.0)
+        for i, (axis, sign) in enumerate(
+                zip(("accel-x", "accel-y", "accel-z"), axis_signs)):
+            frame[axis] = sign * pd.to_numeric(raw.iloc[:, i + 1],
+                                               errors="coerce")
+        frame = frame.dropna().reset_index(drop=True)
+        if len(frame) < 2:
+            raise RuntimeError("SensorConnect 数据为空（有效行不足）")
+
+        # 时间戳严格递增修复：传感器原始时间存在亚 0.1ms 抖动甚至倒退，
+        # 4 位小数取整后出现并列 —— parsie_cols 的严格递增校验会拒绝整
+        # 段数据（auto-trim 切出的第 4/9 段正是这种区间）。先钳制倒退
+        # （maximum.accumulate），再去重：并列时间戳只保留第一个样本
+        # （抖动重复本就是废样本，零失真；总重复 ~8.6k/2.88M，占比可忽略）。
+        tt = frame["Time"].to_numpy()
+        tt = np.maximum.accumulate(tt)
+        keep = np.concatenate(([True], np.diff(tt) > 0))
+        if not keep.all():
+            frame = frame.loc[keep].reset_index(drop=True)
+        frame["Time"] = tt[keep] if not keep.all() else tt
+
+        # 采样率：优先 CHANNEL_INFO 声明；缺失时用未取整的原始时间差推导。
+        fs = fs_hint
+        if not fs:
+            dt = float(raw.iloc[1, 0]) - float(raw.iloc[0, 0])
+            fs = round(1.0 / dt) if dt > 0 else 500
+
+        cols_str = "Time accel-x accel-y accel-z"
+        self.data = AccData(frame, is_raw=True, path=os.path.basename(path))
+        self.data.fs = int(fs)
+        self.data.set_colID(cols_str)
+        self.fs = self.data.fs
+
+    def export_data(self):
+        return (self.data,)
+
+
 class RawData:
     """DAQ CSV or six-channel tab data; read the numeric body only once."""
 
@@ -578,7 +685,8 @@ class StingData: ##obselete
 def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
                            win_s: float = 0.5, min_gap_s: float = 10.0,
                            min_test_s: float = 3.0, max_lead_s: float = 15.0,
-                           min_active_frac: float = 0.15):
+                           min_active_frac: float = 0.25,
+                           quiet_stub_s: float = 60.0):
     """Detect sub-test boundaries in a (possibly concatenated) recording.
 
     A single imported file may hold several measured rides back-to-back,
@@ -674,18 +782,42 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
         return []
 
     # 1-2. Motion magnitude + rolling-mean smoothing.
-    motion = np.sqrt(x ** 2 + y ** 2 + (z - 1.0) ** 2)
+    # Rest baseline is DATA-DRIVEN, not assumed (0,0,+1g): a sensor mounted
+    # in another orientation reads rest far from +1g on Z (SensorConnect
+    # example: rest ≈ (0.16, -0.02, -0.99)), and the fixed (z-1)² term then
+    # makes every idle sample look like ~2g of motion — no quiet gap is ever
+    # found and the whole file is returned as one test. Instead, take the
+    # FLATTEST win_s window of the recording (lowest summed per-axis rolling
+    # std) and use its per-axis mean as the rest vector; motion is deviation
+    # from that. Falls back to (0,0,1) only when the window computation
+    # degenerates.
     win = max(1, int(round(win_s * fs)))
+    try:
+        std_sum = (pd.Series(x).rolling(win, center=True).std()
+                   + pd.Series(y).rolling(win, center=True).std()
+                   + pd.Series(z).rolling(win, center=True).std()).values
+        flat_i = int(np.nanargmin(std_sum))
+        rx, ry, rz = (float(np.mean(x[flat_i:flat_i + win])),
+                      float(np.mean(y[flat_i:flat_i + win])),
+                      float(np.mean(z[flat_i:flat_i + win])))
+    except Exception:
+        rx, ry, rz = 0.0, 0.0, 1.0
+    motion = np.sqrt((x - rx) ** 2 + (y - ry) ** 2 + (z - rz) ** 2)
     smoothed = (pd.Series(motion).rolling(win, center=True).mean()
                 .bfill().ffill().values)
 
-    # 3-4. Contiguous quiet runs; keep the long ones as test boundaries.
+    # 3-4. Contiguous quiet runs (CLOCK duration — a SensorConnect-style
+    # sensor logs at a nominal fs but its true sample spacing can differ a
+    # few percent, so sample-count durations would drift). Timestamp
+    # DISCONTINUITIES (dt > min_gap_s between consecutive samples — the
+    # sensor stopped/restarted logging) are boundaries too, and they split
+    # right at the jump: there is no shared quiet data to midpoint.
     is_quiet = smoothed < quiet_thresh
     edges = np.diff(np.concatenate([[0], is_quiet.astype(int), [0]]))
     starts = np.where(edges == 1)[0]
     ends = np.where(edges == -1)[0] - 1
-    long_gaps = [(s, e) for s, e in zip(starts, ends)
-                 if (e - s) / fs >= min_gap_s]
+    long_gaps = [(int(s), int(e)) for s, e in zip(starts, ends)
+                 if (t[e] - t[s]) >= min_gap_s]
 
     # 5-6. Build tests from the ACTIVE regions (the spans between long quiet
     #      gaps). A long gap between two tests splits at its MIDPOINT so each
@@ -709,6 +841,21 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
         else:
             tail_end, head_start = gs + max_lead, ge - max_lead + 1
         gap_cuts.append((tail_end, head_start))
+    # Timestamp jumps (sensor stopped/restarted logging) also cut — right at
+    # the jump, nothing shared between the sides.
+    dts = np.diff(t)
+    for i in np.where(dts > min_gap_s)[0]:
+        gap_cuts.append((int(i), int(i) + 1))
+    # Sort by cut position and merge overlaps (a jump can sit inside a quiet
+    # gap's span).
+    gap_cuts.sort()
+    merged_cuts: list = []
+    for tail_end, head_start in gap_cuts:
+        if merged_cuts and tail_end < merged_cuts[-1][1]:
+            prev_tail, prev_head = merged_cuts[-1]
+            merged_cuts[-1] = (prev_tail, max(prev_head, head_start))
+        else:
+            merged_cuts.append((tail_end, head_start))
 
     # Walk the gaps: each gap separates two tests. The test BEFORE a gap ends
     # at the gap's tail_end; the test AFTER starts at the gap's head_start.
@@ -722,11 +869,11 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
     if has_leading:
         first_head = long_gaps[0][1] - max_lead + 1
         test_start = max(long_gaps[0][0], min(first_head, long_gaps[0][1]))
-    for (tail_end, head_start) in gap_cuts:
+    for (tail_end, head_start) in merged_cuts:
         # Guard against a single gap that is BOTH leading and trailing (the
         # whole file is one dead-air gap): skip a region whose end is at/before
         # its start to avoid a negative-length or duplicate segment.
-        if tail_end > test_start and (tail_end - test_start) / fs >= min_test_s:
+        if tail_end > test_start and (t[tail_end] - t[test_start]) >= min_test_s:
             regions.append((test_start, tail_end))
         test_start = max(test_start, head_start)
     # If the file ends with a long gap (tail), cap the last test's tail.
@@ -740,7 +887,7 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
         last_end = min(last_end, last)
     else:
         last_end = last
-    if last_end > test_start and (last_end - test_start) / fs >= min_test_s:
+    if last_end > test_start and (t[last_end] - t[test_start]) >= min_test_s:
         regions.append((test_start, last_end))
 
     # 7. Drop short QUIET fragments. A candidate that is BOTH shorter than
@@ -748,18 +895,29 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
     #    dead air that the midpoint split carved out, not a real test. A short
     #    but genuinely moving segment (a brief ride) is kept — its active
     #    fraction is high, so it survives this filter.
-    def _is_short_quiet(s, e):
-        dur = (e - s) / fs
-        if dur >= min_test_s:
+    #    A SECOND band drops longer pure-quiet stubs (< quiet_stub_s, active
+    #    fraction below the same threshold): the 5–40s lead-in/tail remnants
+    #    the max_lead cap and jump cuts carve out around real rides. Real
+    #    rides run tens of seconds to minutes at ≥0.5 active, so 60s/0.15
+    #    separates them by a wide margin (SensorConnect 参考数据实测).
+    def _is_dead_air(s, e):
+        dur = t[e] - t[s]
+        if dur >= quiet_stub_s:
             return False                     # long enough — keep regardless
         active_frac = float(np.mean(smoothed[s:e + 1] >= quiet_thresh))
         return active_frac < min_active_frac
 
-    regions = [(s, e) for s, e in regions if not _is_short_quiet(s, e)]
+    regions = [(s, e) for s, e in regions if not _is_dead_air(s, e)]
 
-    # 8. Sample indices -> timestamps, with an exclusive right edge.
+    # 8. Sample indices -> timestamps, with an exclusive right edge. The
+    #    "next sample" must be CONTIGUOUS: with timestamp jumps in the file,
+    #    t[e+1] can leap minutes forward (sensor stopped logging) — then the
+    #    region end would teleport onto the wrong side of the jump.
     out = []
     for s, e in regions:
-        end = float(t[e + 1]) if e + 1 < len(t) else float(t[e]) + 1 / fs
+        if e + 1 < len(t) and (t[e + 1] - t[e]) <= 2.0 / fs:
+            end = float(t[e + 1])
+        else:
+            end = float(t[e]) + 1.0 / fs
         out.append((float(t[s]), end))
     return out

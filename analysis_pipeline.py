@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 from matplotlib.path import Path
 
-from accdata import AccData, RawData
+from accdata import AccData, RawData, SensorConnectData
 from background import Cancelled
 from sci_calculation import (ProcessASTM, detect_z_acceleration_reversal,
                              detect_xy_acceleration_reversal, sampling_frequency)
@@ -101,9 +101,20 @@ def prepare_analysis(request, token, progress):
 
 
 def import_recording(path, raw, cutoff, token, progress):
+    """Load one file into dataset(s).
+
+    ``raw`` selects the source type: True = DAQ raw (RawData, GB+ASTM 双数据
+    集), 'sensorconnect' = SensorConnect 单传感器 CSV（三通道 X/Y/Z）,
+    False/其他 = 标准 .sup（AccData）。
+    """
     token.check()
     progress(5, 'Reading recording')
-    data = RawData(path).export_data() if raw else (AccData(path, cutoff=cutoff),)
+    if raw == 'sensorconnect':
+        data = SensorConnectData(path).export_data()
+    elif raw:
+        data = RawData(path).export_data()
+    else:
+        data = (AccData(path, cutoff=cutoff),)
     for index, item in enumerate(data):
         token.check()
         item.filter_data(cutoff)
