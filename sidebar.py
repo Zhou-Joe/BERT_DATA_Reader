@@ -54,13 +54,16 @@ class InfoCard(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setFixedHeight(72)
+        self.setFixedHeight(62)
         self.setAccessibleName(f'Recording {data.filename}')
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 10, 8, 10)
         layout.setSpacing(10)
-        self._indicator = QFrame()
-        self._indicator.setFixedSize(4, 38)
+        self._indicator = QToolButton()
+        self._indicator.setFixedSize(22, 24)
+        self._indicator.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._indicator.setAccessibleName(f'Change trace colour for {data.filename}')
+        self._indicator.clicked.connect(self._pick_color)
         layout.addWidget(self._indicator)
         text = QVBoxLayout()
         text.setSpacing(6)
@@ -80,12 +83,14 @@ class InfoCard(QWidget):
         self._plot_check.setCheckable(True)
         self._plot_check.setChecked(mainui.dataset_visibility.get(data.filename, True))
         self._plot_check.setToolTip('Show or hide this recording on Trend')
+        self._plot_check.setAccessibleName(f'Show {display_name} on Trend')
         self._plot_check.toggled.connect(self._on_plot_toggled)
         layout.addWidget(self._plot_check)
         self._more = QToolButton()
         self._more.setText('...')
         self._more.setFixedSize(26, 30)
         self._more.setToolTip('Recording actions')
+        self._more.setAccessibleName(f'Actions for {display_name}')
         self._more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._more.setMenu(self.action_menu(self._more))
         self._more.setStyleSheet('QToolButton::menu-indicator { image: none; }')
@@ -134,9 +139,13 @@ class InfoCard(QWidget):
             f'QWidget#recordingRow {{ background: {bg}; border: 1px solid {border};'
             f' border-radius: 9px; }}'
             f'QWidget#recordingRow:hover {{ border-color: {tk["accent"]}; }}')
-        self._title_label.setStyleSheet(f'color: {tk["text"]}; font-size: 10pt; font-weight: 600;')
+        self._title_label.setStyleSheet(f'color: {tk["text"]}; font-size: 11pt; font-weight: 600;')
         self._meta.setStyleSheet(f'color: {tk["text_secondary"]}; font-size: 9pt;')
-        self._indicator.setStyleSheet(f'background: {self._color}; border: none; border-radius: 2px;')
+        self._indicator.setToolTip(f'Change trace colour ({self._color})')
+        self._indicator.setStyleSheet(
+            f'QToolButton {{ background: {self._color}; border: 1px solid {tk["card_stroke"]};'
+            ' border-radius: 5px; }'
+            f'QToolButton:hover, QToolButton:focus {{ border: 2px solid {tk["text"]}; }}')
         self._plot_check.setIcon(FI.VIEW if self._plot_check.isChecked() else FI.HIDE)
         self._title_label._update_text()
 
@@ -154,7 +163,7 @@ class InfoCard(QWidget):
         """Open a native colour dialog and apply the chosen colour."""
         initial = QColor(self._color)
         dlg = QColorDialog(initial, self)
-        dlg.setWindowTitle("Choose Dataset Colour")
+        dlg.setWindowTitle(f"Trace colour — {self._data.filename}")
         # The main window sets a QSS that targets QLabel/QGroupBox/QStatusBar —
         # those rules cascade into QColorDialog and corrupt its native picker
         # (custom-colour swatches and the OK/Cancel buttons end up unreadable,
@@ -244,7 +253,7 @@ class _ResizeHandle(QWidget):
         from PySide6.QtGui import QPainter
         tk = theme_manager.tokens
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(tk["card_stroke"]))
+        painter.fillRect(0, 0, 1, self.height(), QColor(tk["divider"]))
         painter.end()
 
     def mousePressEvent(self, event) -> None:
@@ -290,7 +299,7 @@ class DataSidebar(QWidget):
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(14, 18, 14, 14)
-        body_layout.setSpacing(12)
+        body_layout.setSpacing(9)
         heading = QHBoxLayout()
         self._heading = QLabel('Recordings')
         self._heading.setObjectName('libraryTitle')
@@ -299,22 +308,17 @@ class DataSidebar(QWidget):
         self._count.setObjectName('libraryCount')
         heading.addWidget(self._count)
         heading.addStretch()
-        add = QToolButton()
-        self._import_button = add
-        add.setText('+ Import')
-        add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        add.setToolTip('Import recordings')
-        menu = QMenu(add)
-        menu.addAction('Raw DAQ data...', parent.open_raw_data)
-        menu.addAction('Acceleration data...', parent.open_accel_data)
-        menu.addAction('Legacy SensorConnect exports (512 Hz)...',
-                       parent.open_legacy_sensorconnect_data)
-        add.setMenu(menu)
-        heading.addWidget(add)
+        self._import_button = parent._import_button('Add')
+        heading.addWidget(self._import_button)
+        kicker = QLabel('SOURCE LIBRARY')
+        kicker.setObjectName('caption')
+        body_layout.addWidget(kicker)
         body_layout.addLayout(heading)
         self._search = QLineEdit()
         self._search.setObjectName('recordingSearch')
-        self._search.setPlaceholderText('Find a recording...')
+        self._search.setPlaceholderText('Find a recording…')
+        self._search.setToolTip('Find a recording (Ctrl+F)')
+        self._search.setAccessibleName('Find a recording')
         self._search.setClearButtonEnabled(True)
         self._search.setFixedHeight(36)
         self._search.textChanged.connect(self._filter_rows)
@@ -326,13 +330,13 @@ class DataSidebar(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setMinimumHeight(160)
+        self._scroll.setMinimumHeight(134)
         self._content = QWidget()
         self._content.setObjectName('recordingList')
         self._layout = QVBoxLayout(self._content)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(7)
-        self._empty_hint = QLabel('No recordings yet\n\nImport a DAQ or .sup file to begin.')
+        self._empty_hint = QLabel('Imported recordings appear here.')
         self._empty_hint.setObjectName('libraryHint')
         self._empty_hint.setWordWrap(True)
         self._empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -349,12 +353,12 @@ class DataSidebar(QWidget):
         self._inspector.setObjectName('signalInspector')
         self._inspector_layout = QVBoxLayout(self._inspector)
         self._inspector_layout.setContentsMargins(14, 14, 14, 14)
-        self._inspector_layout.setSpacing(8)
+        self._inspector_layout.setSpacing(6)
         self._inspector_scroll.setWidget(self._inspector)
         self._splitter.addWidget(self._inspector_scroll)
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 0)
-        self._splitter.setSizes([300, 260])
+        self._splitter.setSizes([175, 290])
         self._inspector_scroll.hide()
         body_layout.addWidget(self._splitter, 1)
         self._actions_host = QWidget()
@@ -367,12 +371,13 @@ class DataSidebar(QWidget):
     def refresh_theme(self):
         tk = theme_manager.tokens
         self.setStyleSheet(
-            f'QWidget#recordingLibrary {{ background: {tk["window_bg"]};'
+            f'QWidget#recordingLibrary {{ background: {tk["surface_alt"]};'
             f' border-left: 1px solid {tk["divider"]}; }}'
             f'QWidget#recordingList, QScrollArea {{ background: transparent; border: none; }}'
             f'QWidget#signalInspector {{ background: {tk["surface"]};'
             f' border: 1px solid {tk["card_stroke"]}; border-radius: 10px; }}'
-            f'QLabel#libraryTitle {{ color: {tk["text"]}; font-size: 14pt; font-weight: 600; }}'
+            f'QLabel#libraryTitle {{ color: {tk["text"]}; font: bold 21px "Segoe UI"; }}'
+            f'QLabel#metricValue {{ color: {tk["text"]}; font: bold 17px "Segoe UI"; }}'
             f'QLabel#libraryCount {{ color: {tk["text_secondary"]}; font-size: 10pt; padding: 2px 7px;'
             f' background: {tk["surface"]}; border-radius: 8px; }}'
             f'QLabel#libraryHint {{ color: {tk["text_secondary"]}; padding: 20px 8px; font-size: 10pt; }}'
@@ -380,6 +385,10 @@ class DataSidebar(QWidget):
             f' border: 1px solid {tk["control_stroke"]}; border-radius: 7px; padding: 0 10px; }}'
             f'QLineEdit#recordingSearch:focus {{ border-color: {tk["accent"]}; }}'
             f'QSplitter::handle {{ background: transparent; }}'
+            f'QScrollBar:vertical {{ background: transparent; width: 7px; margin: 0; }}'
+            f'QScrollBar::handle:vertical {{ background: {tk["control_stroke"]}; border-radius: 3px; min-height: 24px; }}'
+            'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }'
+            'QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }'
             f'QMenu {{ background: {tk["surface"]}; color: {tk["text"]};'
             f' border: 1px solid {tk["card_stroke"]}; padding: 6px; }}'
             f'QMenu::item {{ padding: 8px 16px; border-radius: 4px; }}'
@@ -400,6 +409,10 @@ class DataSidebar(QWidget):
         self._mainui.select_data.setCurrentText(filename)
         self.select_filename(filename)
 
+    def focus_search(self):
+        self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._search.selectAll()
+
     def select_filename(self, filename):
         if not any(row._data.filename == filename for row in self._cards):
             return
@@ -415,8 +428,8 @@ class DataSidebar(QWidget):
             row.setVisible(matches)
             visible += int(matches)
         self._count.setText(f'{visible} / {len(self._cards)}' if text else str(len(self._cards)))
-        self._empty_hint.setText('No matching recordings' if self._cards else
-                                 'No recordings yet\n\nImport a DAQ or .sup file to begin.')
+        self._empty_hint.setText('No matching recordings. Try a shorter name.' if self._cards else
+                                 'Imported recordings appear here.')
         self._empty_hint.setVisible(visible == 0)
 
     def _render_inspector(self):
@@ -447,14 +460,25 @@ class DataSidebar(QWidget):
         cutoff = getattr(data, '_filtered_cutoff', None)
         title = QLabel('Signal summary' if self._plottype == 'Raw' or cutoff is None
                        else f'Signal summary / {cutoff:g} Hz')
-        title.setStyleSheet(f'font-size: 12pt; font-weight: 600; color: {tk["text"]};')
+        title.setStyleSheet(f'font-size: 12pt; font-weight: bold; color: {tk["text"]};')
         layout.addWidget(title)
         mode = {'Standard': 'Calibrated', 'Filter': 'Filtered', 'Raw': 'Raw'}[self._plottype]
-        subtitle = QLabel(f'{mode}  /  {len(data.data):,} samples  /  {data.fs:g} Hz')
-        subtitle.setStyleSheet(f'color: {tk["text_secondary"]}; font-size: 9pt;')
-        layout.addWidget(subtitle)
+        metrics = QWidget()
+        metrics_layout = QGridLayout(metrics)
+        metrics_layout.setContentsMargins(0, 2, 0, 2)
+        metrics_layout.setVerticalSpacing(0)
+        for column, (label, reading) in enumerate([('SAMPLE RATE', f'{data.fs:g} Hz'),
+                                                   ('SAMPLES', f'{len(data.data):,}')]):
+            key_label = QLabel(label)
+            key_label.setObjectName('caption')
+            value_label = QLabel(reading)
+            value_label.setObjectName('metricValue')
+            metrics_layout.addWidget(key_label, 0, column)
+            metrics_layout.addWidget(value_label, 1, column)
+            metrics_layout.setColumnStretch(column, 1)
+        layout.addWidget(metrics)
         first, last = data.data['Time'].iloc[[0, -1]]
-        times = QLabel(f'Time  {first:,.3f} to {last:,.3f} s')
+        times = QLabel(f'{mode}   ·   {first:,.3f} to {last:,.3f} s')
         times.setStyleSheet(f'color: {tk["text_secondary"]}; font-size: 9pt;')
         layout.addWidget(times)
         pending = self._pending_details and self._plottype != 'Raw'
@@ -465,25 +489,31 @@ class DataSidebar(QWidget):
         pending_label.setVisible(pending)
         from sci_calculation import ProcessASTM
         pos, neg = ([0] * 3, [0] * 3) if pending else ProcessASTM(frame, max(1, round(.2 * data.fs)))
-        table = QWidget()
+        table = QFrame()
+        table.setObjectName('signalStats')
+        table.setStyleSheet(f'QFrame#signalStats {{ background: {tk["window_bg"]};'
+                            f' border: 1px solid {tk["divider"]}; border-radius: 6px; }}')
         self._stats_panel = table
         grid = QGridLayout(table)
-        grid.setContentsMargins(0, 6, 0, 6)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(12)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setHorizontalSpacing(5)
+        grid.setVerticalSpacing(8)
         for col, text in enumerate(['Axis', 'Max / min (g)', '0.2 s + / - (g)']):
             label = QLabel(text)
             label.setStyleSheet(f'color: {tk["text_secondary"]}; font-size: 8pt;')
+            if col:
+                label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             grid.addWidget(label, 0, col)
         self._inspector_values = {}
         for axis, name in enumerate('XYZ'):
             label = QLabel(name)
-            label.setStyleSheet(f'font-size: 11pt; font-weight: 600; color: {row._color};')
+            label.setStyleSheet(f'font-size: 10pt; font-weight: 600; color: {tk["text"]};')
             grid.addWidget(label, axis + 1, 0)
             values = frame.iloc[:, axis + 1]
             for col, pair in enumerate([(values.max(), values.min()), (pos[axis], neg[axis])], 1):
                 value = QLabel(f'{pair[0]:+.3f} / {pair[1]:+.3f}')
-                value.setStyleSheet(f'color: {tk["text"]}; font-size: 10pt;')
+                value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                value.setStyleSheet(f'color: {tk["text"]}; font-size: 9pt;')
                 grid.addWidget(value, axis + 1, col)
                 self._inspector_values[(name, col)] = value
         grid.setColumnStretch(1, 1)
@@ -506,6 +536,11 @@ class DataSidebar(QWidget):
             f'QPushButton:hover {{ background: {tk["accent_hover"]}; }}')
         export.clicked.connect(row._popup_export)
         actions.addWidget(export, 1)
+        trim = QPushButton('Trim / split')
+        trim.setFixedHeight(32)
+        trim.setToolTip('Review time intervals or detect test segments')
+        trim.clicked.connect(row._popup_truncate)
+        actions.addWidget(trim)
         edit = QToolButton()
         edit.setText('Edit')
         edit.setFixedHeight(32)

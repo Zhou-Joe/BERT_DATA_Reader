@@ -12,7 +12,7 @@ from PySide6.QtCharts import QChart, QChartView, QLineSeries, QAreaSeries, QValu
 from PySide6.QtCore import Qt, QPointF, QTimer, QMargins
 from PySide6.QtGui import QPainter, QColor, QPen, QCursor
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QSizePolicy, QLabel,
+    QFrame, QHBoxLayout, QWidget, QVBoxLayout, QSizePolicy, QLabel,
 )
 
 from chart_base import BaseChartView, INTERACTION_ZOOM, INTERACTION_PAN, INTERACTION_DEFAULT, PanChartView
@@ -44,7 +44,7 @@ class _SubChart(PanChartView):
 
         # Axes
         self._axis_x = QValueAxis()
-        self._axis_x.setTitleText("time (s)")
+        self._axis_x.setTitleText("Time (s)" if y_label == 'Vertical' else '')
         self._axis_x.setTickCount(10)
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
 
@@ -53,6 +53,7 @@ class _SubChart(PanChartView):
         # (a fresh QValueAxis carries no title).
         self._y_label = y_label
         self._axis_y.setTitleText(self._y_label)
+        self._axis_y.setTitleVisible(False)
         self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
 
         self.setChart(self._chart)
@@ -125,13 +126,14 @@ class _SubChart(PanChartView):
         clear_chart(self._chart)
         # Re-add clean axes
         self._axis_x = QValueAxis()
-        self._axis_x.setTitleText("time (s)")
+        self._axis_x.setTitleText("Time (s)" if self._y_label == 'Vertical' else '')
         self._axis_x.setTickCount(10)
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
 
         self._axis_y = QValueAxis()
         # Restore the Y-axis title lost with the previous axis object.
         self._axis_y.setTitleText(self._y_label)
+        self._axis_y.setTitleVisible(False)
         self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
 
         # clear_chart() rebuilt the axes, so the rangeChanged connections from
@@ -599,15 +601,31 @@ class TrendChartView(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(1)
+        layout.setSpacing(5)
 
         self._chart_x = _SubChart("Fore/Aft", self)
         self._chart_y = _SubChart("Lateral", self)
         self._chart_z = _SubChart("Vertical", self)
 
-        layout.addWidget(self._chart_x, 1)
-        layout.addWidget(self._chart_y, 1)
-        layout.addWidget(self._chart_z, 1)
+        for code, name, sub in [('X', 'Fore / aft', self._chart_x), ('Y', 'Lateral', self._chart_y),
+                                ('Z', 'Vertical', self._chart_z)]:
+            panel = QFrame()
+            panel.setObjectName('channelPanel')
+            channel = QVBoxLayout(panel)
+            channel.setContentsMargins(6, 4, 6, 2)
+            channel.setSpacing(0)
+            header = QHBoxLayout()
+            header.setContentsMargins(4, 0, 5, 0)
+            header.setSpacing(8)
+            for text, role in [(code, 'channelCode'), (name, 'channelName'), ('ACCELERATION  /  g', 'caption')]:
+                label = QLabel(text)
+                label.setObjectName(role)
+                header.addWidget(label)
+                if role == 'channelName':
+                    header.addStretch()
+            channel.addLayout(header)
+            channel.addWidget(sub, 1)
+            layout.addWidget(panel, 1)
 
         # X-axis cross-link: any sub-chart's time range changing should mirror
         # onto the other two, so the three trends stay horizontally aligned

@@ -12,21 +12,19 @@ import sys
 
 import numpy as np
 
-from PySide6.QtCharts import QChartView
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QIcon, QColor, QCursor, QAction, QActionGroup
+from PySide6.QtGui import QIcon, QColor, QAction, QActionGroup, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QToolBar, QWidget, QFileDialog, QStatusBar,
+    QToolBar, QWidget, QFileDialog,
     QLabel, QFrame, QToolButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
-    QApplication, QScrollArea, QMenu,
+    QApplication, QMenu,
 )
 
 import qfluentwidgets as qfw
 from qfluentwidgets import (
-    FluentWindow,
     Action, ComboBox, SpinBox, DoubleSpinBox, PushButton, PrimaryPushButton,
-    ToggleToolButton, TransparentToolButton, FluentIcon as FI, InfoBadge,
+    ToggleToolButton, TransparentToolButton, FluentIcon as FI,
 )
 
 import accdata
@@ -39,6 +37,7 @@ from chart_astm import ASTMChartView
 from chart_reversal import ZReversalChartView, XYReversalChartView
 from sci_calculation import allowance_at_t0
 from nav_icons import NavIcon
+from workspace_shell import AtlasPlate, WorkspaceWindow, caption
 from processing_controller import ProcessingController
 from theme import DATASET_COLORS, theme_manager
 
@@ -61,22 +60,14 @@ def _add_chart_toolbar(toolbar: QToolBar, chart_widget) -> None:
     chart_widget can be a QChartView (AccZoneChartView) or a QWidget container
     (TrendChartView, ASTMChartView, GBChartView) that has zoom_mode() method.
 
-    Uses qfluentwidgets ToggleToolButton + FluentIcon so the buttons match the
-    rest of the Fluent UI instead of emoji. Interaction logic is unchanged:
-    zoom/pan are mutually-exclusive toggles, and un-checking returns the chart
-    to default mode.
+    Zoom and pan are mutually exclusive. Native toolbar actions remain
+    accessible through the overflow menu on a narrow chart.
     """
-    zoom_btn = ToggleToolButton(toolbar)
-    # ToggleToolButton pins IconOnly internally, so icon+text overlap. Use
-    # text-only (no icon) for a clean readable label.
-    zoom_btn.setText("Zoom")
-    zoom_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    zoom_btn = toolbar.addAction('Zoom')
     zoom_btn.setCheckable(True)
     zoom_btn.setStatusTip("Enable zoom by dragging (rubber band)")
 
-    pan_btn = ToggleToolButton(toolbar)
-    pan_btn.setText("Pan")
-    pan_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+    pan_btn = toolbar.addAction('Pan')
     pan_btn.setCheckable(True)
     pan_btn.setStatusTip("Enable pan mode (drag to scroll)")
 
@@ -101,9 +92,6 @@ def _add_chart_toolbar(toolbar: QToolBar, chart_widget) -> None:
     zoom_btn.toggled.connect(_on_zoom)
     pan_btn.toggled.connect(_on_pan)
 
-    toolbar.addWidget(zoom_btn)
-    toolbar.addWidget(pan_btn)
-
     def _reset() -> None:
         zoom_btn.blockSignals(True)
         pan_btn.blockSignals(True)
@@ -114,218 +102,15 @@ def _add_chart_toolbar(toolbar: QToolBar, chart_widget) -> None:
         chart_widget.zoom_mode("default")
         chart_widget.reset_view()
 
-    a_reset = Action(FI.SYNC, "Reset View", toolbar)
+    a_reset = Action(FI.SYNC, "Reset", toolbar)
+    a_reset.setToolTip('Reset view')
     a_reset.setStatusTip("Reset chart to fit all data")
     a_reset.triggered.connect(_reset)
     toolbar.addAction(a_reset)
 
 
-class BertFluentWindow(FluentWindow):
-    """FluentWindow + a full-width QStatusBar at the bottom.
-
-    FluentWindow is a QWidget (not QMainWindow), so it has no status bar.
-    This subclass rebuilds the top-level layout into a QVBoxLayout so a
-    QStatusBar can sit beneath the whole (navigation + stacked pages) area.
-    Also exposes ``addTitleBarWidget`` to drop controls (e.g. the theme
-    toggle) into the frameless title bar.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        # Disable the Mica/acrylic effect so the window paints its own solid
-        # Fluent background (light #f0f4f9 / dark #202020). With Mica enabled
-        # the window background is transparent and relies on the OS compositor
-        # to paint Mica behind it — which silently fails on Win10 / offscreen /
-        # some setups, leaving the window black or unchanging on theme switch.
-        # Disabling it guarantees a correct themed background everywhere.
-        self.setMicaEffectEnabled(False)
-        self._install_status_bar()
-        self._install_top_bar()
-        self._install_control_panel()
-
-    def _install_status_bar(self) -> None:
-        """Add a QStatusBar across the bottom of the window.
-
-        FluentWindowBase installs ``QHBoxLayout(self)`` as the widget layout
-        and you CANNOT replace an already-installed widget layout (the earlier
-        takeAt + QVBoxLayout(self) attempt silently broke page visibility).
-        Instead we keep FluentWindow's layout untouched and place the status
-        bar as a child widget, manually positioned in resizeEvent. The bottom
-        margin of ``widgetLayout`` is bumped so content never sits under it.
-        """
-        self._status_bar = QStatusBar(self)
-        self._status_bar.setSizeGripEnabled(False)
-        # Reserve room at the bottom of the content column for the status bar.
-        sb_h = self._status_bar.sizeHint().height()
-        # widgetLayout holds the stacked pages; widen its bottom margin.
-        try:
-            lm, tm, rm, bm = self.widgetLayout.getContentsMargins()
-            self.widgetLayout.setContentsMargins(lm, tm, rm, sb_h)
-        except Exception:
-            pass
-        self._position_status_bar()
-
-    def _position_status_bar(self) -> None:
-        """Place the status bar flush with the bottom edge, full width."""
-        sb = getattr(self, "_status_bar", None)
-        if sb is None:
-            return
-        sb_h = sb.sizeHint().height()
-        sb.setGeometry(0, self.height() - sb_h, self.width(), sb_h)
-        sb.raise_()
-
-    def resizeEvent(self, e) -> None:
-        """Keep the manually-positioned bars pinned (top + bottom + ctrl)."""
-        super().resizeEvent(e)
-        self._position_top_bar()
-        self._position_status_bar()
-        self._position_control_panel()
-
-    def statusBar(self) -> QStatusBar:
-        """Compatibility shim — callers use ``self.statusBar().showMessage``."""
-        return self._status_bar
-
-    def addTitleBarWidget(self, widget, index: int = 2) -> None:
-        """Insert *widget* into the frameless title bar.
-
-        ``index`` is the position in the title bar's hBoxLayout (0=icon,
-        1=title, 2=after title / before spacer, 3=before min/max/close).
-        Default 2 places it on the left side; use 3 for the right side.
-        """
-        self.titleBar.hBoxLayout.insertWidget(index, widget, 0,
-                                              Qt.AlignmentFlag.AlignVCenter)
-
-    def _install_top_bar(self) -> None:
-        """Add a persistent control bar below the title bar (always visible).
-
-        Mirrors ``_install_status_bar``: a child QWidget placed at the top of
-        the content area (just under the title bar), manually repositioned in
-        ``resizeEvent``. The top margin of ``widgetLayout`` is bumped by the
-        bar's height so pages never render underneath it. The bar's own layout
-        (a QHBoxLayout) is exposed via ``topBarLayout()`` so subclasses can
-        populate it.
-        """
-        self._top_bar = QWidget(self)
-        self._top_bar.setObjectName("topBar")
-        # A subtle bottom border separates the bar from the page content.
-        self._top_bar.setStyleSheet(
-            "#topBar { border-bottom: 1px solid rgba(128,128,128,90); }")
-        self._top_bar_layout = QVBoxLayout(self._top_bar)
-        self._top_bar_layout.setContentsMargins(16, 8, 16, 8)
-        self._top_bar_layout.setSpacing(8)
-        # Height: enough for a toolbar row (combo/spinbox ~ 24px + margins).
-        self._top_bar_h = 100
-        # Reserve room below the title bar for this bar in the content column.
-        try:
-            lm, tm, rm, bm = self.widgetLayout.getContentsMargins()
-            tb_h = self.titleBar.height() if self.titleBar else 48
-            self.widgetLayout.setContentsMargins(lm, tb_h + self._top_bar_h,
-                                                 rm, bm)
-        except Exception:
-            pass
-        self._position_top_bar()
-
-    def _position_top_bar(self) -> None:
-        """Place the top bar flush under the title bar, to the RIGHT of the nav.
-
-        The left navigation panel's expand/collapse button sits at its top, so
-        the top bar must NOT span the full window width (it would overlap that
-        button). Start it at the navigation panel's right edge — mirroring how
-        the FluentTitleBar positions itself — and let it track the panel width
-        so it stays clear as the nav expands/collapses.
-        """
-        bar = getattr(self, "_top_bar", None)
-        if bar is None:
-            return
-        tb_h = self.titleBar.height() if self.titleBar else 48
-        h = getattr(self, "_top_bar_h", 34)
-        # x = current nav panel width (0 if it isn't laid out yet).
-        try:
-            nav_w = self.navigationInterface.width()
-        except Exception:
-            nav_w = 0
-        bar.setGeometry(nav_w, tb_h, self.width() - nav_w, h)
-        bar.raise_()
-
-    def topBarLayout(self) -> QVBoxLayout:
-        """Return the top bar's content layout (for subclasses to populate)."""
-        return self._top_bar_layout
-
-    def _install_control_panel(self) -> None:
-        """Add a persistent control panel directly below the nav tab list.
-
-        Sits OVER the navigation column, pinned just under the LAST nav tab
-        (not at the window bottom, not overlapping the tabs). The nav tab list is
-        top-aligned and its end position is fixed (tab count × 36px), so the
-        panel anchors to that fixed y. Spans the nav width (~200px). Mirrors the
-        top/status-bar overlay pattern: a child QWidget repositioned in
-        ``resizeEvent``. Its content layout (a QVBoxLayout) is exposed via
-        ``controlPanelLayout()`` for the subclass to populate with the shared
-        restraint/condition/height/prone/analyze controls.
-        """
-        self._ctrl_panel = QWidget(self)
-        self._ctrl_panel.setObjectName("ctrlPanel")
-        # A themed surface + top border so it reads as a distinct panel.
-        self._ctrl_panel.setStyleSheet(
-            "#ctrlPanel { border-top: 1px solid rgba(128,128,128,90); }")
-        self._ctrl_panel_layout = QVBoxLayout(self._ctrl_panel)
-        self._ctrl_panel_layout.setContentsMargins(10, 8, 10, 8)
-        self._ctrl_panel_layout.setSpacing(6)
-        self._ctrl_scroll = QScrollArea(self)
-        self._ctrl_scroll.setObjectName("analysisScroll")
-        self._ctrl_scroll.setWidgetResizable(True)
-        self._ctrl_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._ctrl_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._ctrl_scroll.setWidget(self._ctrl_panel)
-        self._position_control_panel()
-
-    def _position_control_panel(self) -> None:
-        """Pin the control panel just below the last nav tab (over the nav column).
-
-        Measures the last nav tab's bottom edge and places the panel a few px
-        below it, so the panel sits directly under the tab list without
-        overlapping any tab and without sinking to the window bottom.
-        """
-        panel = getattr(self, "_ctrl_panel", None)
-        if panel is None:
-            return
-        try:
-            nav_w = self.navigationInterface.width()
-        except Exception:
-            nav_w = 0
-        # Find where the tab list ends: scan the nav panel's tab widgets for the
-        # lowest bottom edge (mapped into window coords).
-        try:
-            from qfluentwidgets.components.navigation.navigation_widget import \
-                NavigationWidget
-            nav_panel = self.navigationInterface.panel
-            last_bottom = 0
-            for w in nav_panel.findChildren(NavigationWidget):
-                if not w.isVisible():
-                    continue
-                b = w.mapTo(self, w.rect().bottomLeft()).y()
-                if b > last_bottom:
-                    last_bottom = b
-            top_y = last_bottom + 4   # 4px gap under the last tab
-        except Exception:
-            # Fallback: a fixed offset (7 tabs × 36px + header) if the scan fails.
-            top_y = (self.titleBar.height() if self.titleBar else 48) + 7 * 36 + 10
-        scroll = getattr(self, "_ctrl_scroll", None)
-        if scroll is not None:
-            # The navigation can collapse on a narrow window. A full settings
-            # form must never be squeezed into its 48px icon rail.
-            scroll.setVisible(nav_w >= 180)
-            available = self.height() - self.statusBar().height() - top_y - 8
-            scroll.setGeometry(8, top_y, max(0, nav_w - 16), max(0, available))
-            scroll.raise_()
-
-    def controlPanelLayout(self) -> QVBoxLayout:
-        """Return the control panel's content layout (for subclasses)."""
-        return self._ctrl_panel_layout
-
-
-class MainWindow(ProcessingController, BertFluentWindow):
-    """BERT_READER X main window — FluentWindow + Qt Charts."""
+class MainWindow(ProcessingController, WorkspaceWindow):
+    """BERT Reader analysis workspace."""
 
     def __init__(self):
         super().__init__()
@@ -373,25 +158,6 @@ class MainWindow(ProcessingController, BertFluentWindow):
 
         # Build UI
         self._setup_ui()
-        # Keep the left navigation panel expanded by default (showing the full
-        # item labels) instead of collapsing to icon-only on mouse-leave. The
-        # nav still collapses on very narrow windows, but at normal widths it
-        # stays open. expand() pops it open immediately (no hover needed).
-        self.navigationInterface.setCollapsible(False)
-        # Narrow the expanded panel (default 322px) so the charts get more
-        # room. The labels are short (e.g. "ASTM Sustained", "GB Contour"),
-        # so ~200px is plenty at the app's font size.
-        self.navigationInterface.setExpandWidth(224)
-        self.navigationInterface.setMinimumExpandWidth(1000)
-        self.navigationInterface.expand(useAni=False)
-        # Reposition the top bar when the nav panel expands/collapses so it
-        # always starts to the RIGHT of the nav (clear of the collapse button).
-        # The expand() call lays out the nav asynchronously, so also re-position
-        # on the next event loop pass once the nav's final width is settled.
-        self.navigationInterface.displayModeChanged.connect(
-            lambda: (self._position_top_bar(), self._position_control_panel()))
-        QTimer.singleShot(0, self._position_top_bar)
-        QTimer.singleShot(0, self._position_control_panel)
         self._update_status_label()
 
         # Wire theme changes: re-apply QSS + refresh inline styles.
@@ -498,13 +264,19 @@ class MainWindow(ProcessingController, BertFluentWindow):
     # ==================================================================
 
     def _setup_ui(self) -> None:
-        # --- Datasets sidebar: persistent RIGHT panel (not a nav page) ---
-        # FluentWindow has no built-in right dock, but its hBoxLayout is
-        # nav | stacked-pages | <extra>; appending the sidebar here keeps it
-        # visible regardless of which page is selected. DataSidebar manages its
-        # own min/max width and paints a theme-aware background itself.
+        # All import entry points use the same labels and readers.
+        self._import_menu = QMenu(self)
+        for label, reader in [
+            ("Raw DAQ recording…", self.open_raw_data),
+            ("Acceleration recording / SUP…", self.open_accel_data),
+            ("SensorConnect CSV…", self.open_sensorconnect_data),
+            ("Legacy SensorConnect SUP (512 Hz)…", self.open_legacy_sensorconnect_data),
+        ]:
+            self._import_menu.addAction(label, reader)
+        self._import_buttons = []
         self.sidebar = DataSidebar(self)
-        self._add_right_panel(self.sidebar)
+        self._library_host = self.sidebar
+        self._work_area.addWidget(self.sidebar)
 
         # --- Chart canvases (created before pages so toolbars can wire up) ---
         self.canvasASTMSust = ASTMChartView(chart_names=["ax", "ay", "az"])
@@ -527,53 +299,49 @@ class MainWindow(ProcessingController, BertFluentWindow):
         self._setup_acczone_page()
         self._setup_zreversal_page()
         self._setup_xyreversal_page()
+        self.stackedWidget.currentChanged.connect(self._update_view_heading)
+        self._update_view_heading()
 
-        # All tabs are built now — build the shared control panel (restraint /
-        # condition / height / prone / Analyze) that sits under the nav tabs.
-        # These are the SINGLE instances every page's Generate/analyze reads.
         self._build_control_panel()
 
-        # --- Theme toggle lives in the frameless title bar ---
         self._setup_theme_toggle()
 
         # --- Status bar ---
         self.statusBar().showMessage("Ready")
 
-    def _add_right_panel(self, panel: QWidget) -> None:
-        """Add a persistent widget to the right of the stacked pages.
+    def _import_button(self, label):
+        button = QToolButton()
+        button.setObjectName("importButton")
+        button.setText(label)
+        button.setIcon(FI.FOLDER_ADD.qicon())
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        button.setMenu(self._import_menu)
+        button.setToolTip("Choose a recording format to import")
+        self._import_buttons.append(button)
+        return button
 
-        FluentWindow's hBoxLayout is [navigationInterface, widgetLayout(stacked)].
-        Appending a third item puts it on the far right, outside the
-        stackedWidget, so it never switches with nav pages.
+    def _find_recording(self):
+        self._library_manually_set = True
+        self._library_toggle.setChecked(True)
+        self.sidebar.focus_search()
 
-        The FluentTitleBar spans the FULL window width across the top ~48px,
-        and the persistent top control bar sits just below it (~34px). If the
-        panel widget itself starts at y=0 (which it does, being a layout item),
-        it covers the title-bar's right side — hiding the theme toggle and the
-        min/max/close buttons — and overlaps the top control bar. To prevent
-        that, we wrap the panel in a container whose top inset equals the
-        title-bar height PLUS the top bar height: the empty strip above the
-        panel lets the title bar and top bar show through and receive clicks.
-        """
-        try:
-            tb_h = self.titleBar.height()
-        except Exception:
-            tb_h = 48
-        # Add the persistent top control bar's height so the panel clears it too.
-        top_bar_h = getattr(self, "_top_bar_h", 34)
-        container = QWidget(self)
-        container.setObjectName("rightPanelHost")
-        cl = QVBoxLayout(container)
-        cl.setContentsMargins(0, tb_h + top_bar_h, 0, self.statusBar().sizeHint().height())
-        cl.setSpacing(0)
-        cl.addWidget(panel, 1)
-        self.hBoxLayout.addWidget(container)
-        # Keep the title bar above the container so its buttons always win z-order.
-        self.titleBar.raise_()
+    def _update_view_heading(self, *_):
+        page = self.stackedWidget.currentWidget()
+        if page:
+            index = self.stackedWidget.currentIndex()
+            section = next(value for start, value in reversed(self.GROUPS.items()) if start <= index)
+            self._view_kicker.setText(f'WORKSPACE   /   {section}     •     {index + 1:02d} OF 07')
+            self._view_heading.setText('Signal timeline' if index == 0 else page.windowTitle())
+            self._nav_buttons[index].setChecked(True)
+
+    def _add_chart_page(self, page, icon, title):
+        page.setWindowTitle(title)
+        self._register_view(page, icon, title)
 
     # -- helper: wrap a page widget + its toolbar into a vertical layout ------
     @staticmethod
-    def _make_page(object_name: str, toolbars, central, margins=(0, 0, 0, 0)):
+    def _make_page(object_name: str, toolbars, central, margins=(16, 10, 16, 12)):
         """Build a nav page: stacked toolbars on top, central widget below.
 
         ``toolbars`` is a list of QToolBar (top-to-bottom). ``central`` is the
@@ -584,7 +352,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         page.setObjectName(object_name)
         lay = QVBoxLayout(page)
         lay.setContentsMargins(*margins)
-        lay.setSpacing(0)
+        lay.setSpacing(6)
         for tb in toolbars:
             lay.addWidget(tb)
         page._chart_content = central
@@ -599,8 +367,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         return page
 
     def _setup_theme_toggle(self) -> None:
-        """Place the Light/Dark toggle in the title bar (right side)."""
-        # TransparentToolButton renders cleanly in the title bar (auto-themed).
+        """Place the appearance switch beside the workspace actions."""
         self.theme_toggle = TransparentToolButton(self)
         # Store the FluentIcon so refresh_theme can re-render it for the
         # current theme (TransparentToolButton caches the icon pixmap).
@@ -612,7 +379,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         self.theme_toggle.setChecked(theme_manager.is_dark)
         self.theme_toggle.toggled.connect(self._toggle_theme)
         # index 3 = just before the min/max/close buttons group.
-        self.addTitleBarWidget(self.theme_toggle, index=3)
+        self._header_actions.addWidget(self.theme_toggle)
 
     @staticmethod
     def _apply_elevation(widget: QWidget, blur: int = 18, dy: int = 3,
@@ -648,10 +415,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         return tb
 
     # ------------------------------------------------------------------
-    # Persistent top control bar (Add Data / selector / cutoff / Annot).
-    # FluentWindow has no addToolBar and is not a QMainWindow, so these
-    # global controls live in the custom top bar (see BertFluentWindow) that
-    # stays visible across every nav page.
+    # Persistent workspace commands and active source.
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -659,7 +423,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         """A thin vertical separator for the top bar."""
         line = QFrame()
         line.setFrameShape(QFrame.Shape.VLine)
-        line.setFixedWidth(2)
+        line.setFixedSize(2, 22)
         line.setStyleSheet("color: rgba(128,128,128,110);")
         return line
 
@@ -698,41 +462,56 @@ class MainWindow(ProcessingController, BertFluentWindow):
 
     def _build_top_bar(self) -> None:
         """Two deliberate rows: file actions, then the active analysis input."""
-        lay = self.topBarLayout()
-        actions = QHBoxLayout()
+        lay = self._top_bar_layout
+        actions = self._header_actions = QHBoxLayout()
         actions.setSpacing(8)
-        title = QLabel("Acceleration workspace")
-        title.setObjectName("workspaceTitle")
-        self._workspace_title = title
-        title.setMinimumWidth(80)
-        title.setMaximumWidth(220)
-        actions.addWidget(title)
+        heading = QVBoxLayout()
+        heading.setSpacing(2)
+        self._view_kicker = caption('WORKSPACE')
+        self._view_heading = caption('', 'workspaceTitle')
+        heading.addWidget(self._view_kicker)
+        heading.addWidget(self._view_heading)
+        actions.addLayout(heading)
+        actions.addSpacing(8)
+        self._workspace_title = QLabel()
+        actions.addWidget(self._workspace_title, 0, Qt.AlignmentFlag.AlignVCenter)
         actions.addStretch(1)
         self._data_actions = []
-        self._import_actions = []
-        for icon, text, slot, needs_data in [
-            (FI.FOLDER_ADD, "Add raw data", self.open_raw_data, False),
-            (FI.ADD, "Add accel data", self.open_accel_data, False),
-            (FI.IOT, "SensorConnect", self.open_sensorconnect_data, False),
-            (FI.SHARE, "Export all", self._export_all_to_sup, True),
-            (FI.DOCUMENT, "Report", self._show_report_dialog, True),
+        actions.addWidget(self._import_button("Import"))
+        file_menu = QMenu(self)
+        for icon, text, slot in [
+            (FI.SHARE, "Export all", self._export_all_to_sup),
+            (FI.DOCUMENT, "Word report", self._show_report_dialog),
+            (FI.DELETE, "Clear all", lambda: self.reset_trend(reset_datalist=True)),
         ]:
             action = Action(icon, text, self)
             action.triggered.connect(slot)
-            actions.addWidget(self._tb_button_for(action))
-            if needs_data:
-                self._data_actions.append(action)
+            if text == 'Word report':
+                actions.addWidget(self._tb_button_for(action))
             else:
-                self._import_actions.append(action)
-        clear = Action(FI.DELETE, "Clear all", self)
-        clear.triggered.connect(lambda: self.reset_trend(reset_datalist=True))
-        actions.addWidget(self._tb_button_for(clear))
-        self._data_actions.append(clear)
+                file_menu.addAction(action)
+            self._data_actions.append(action)
+        more = QToolButton()
+        more.setText('More')
+        more.setToolTip('Export or clear the workspace')
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        more.setMenu(file_menu)
+        actions.addWidget(more)
+        actions.addWidget(self._vline())
+        self._library_toggle = QToolButton()
+        self._library_toggle.setText("Library")
+        self._library_toggle.setCheckable(True)
+        self._library_manually_set = False
+        self._library_toggle.clicked.connect(self._remember_library_choice)
+        self._library_toggle.setToolTip("Show or hide the recording library")
+        self._library_toggle.toggled.connect(self._library_host.setVisible)
+        actions.addWidget(self._library_toggle)
+        QShortcut(QKeySequence.StandardKey.Find, self, activated=self._find_recording)
         lay.addLayout(actions)
 
         inputs = QHBoxLayout()
         inputs.setSpacing(10)
-        inputs.addWidget(QLabel("Dataset"))
+        inputs.addWidget(caption('SOURCE'))
         self.select_data = ComboBox()
         self.select_data.setMinimumWidth(150)
         self.select_data.setSizePolicy(QSizePolicy.Policy.Expanding,
@@ -742,9 +521,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         self._generate_button = PrimaryPushButton("Update charts")
         self._generate_button.setToolTip("Refresh all analysis charts for the selected dataset")
         self._generate_button.clicked.connect(self._generate_active_page)
-        inputs.addWidget(self._generate_button)
-        inputs.addWidget(self._vline())
-        inputs.addWidget(QLabel("Low-pass"))
+        inputs.addWidget(caption('LOW-PASS'))
         self.cutoff_spin = SpinBox()
         self.cutoff_spin.setRange(1, 249)
         self.cutoff_spin.setValue(self.cutoff)
@@ -754,6 +531,8 @@ class MainWindow(ProcessingController, BertFluentWindow):
         self.cutoff_spin.setKeyboardTracking(False)
         self.cutoff_spin.valueChanged.connect(self._schedule_cutoff_change)
         inputs.addWidget(self.cutoff_spin)
+        inputs.addWidget(self._generate_button)
+        self._input_actions = inputs
         lay.addLayout(inputs)
         self._cutoff_timer = QTimer(self)
         self._cutoff_timer.setSingleShot(True)
@@ -769,8 +548,14 @@ class MainWindow(ProcessingController, BertFluentWindow):
         self._wire_data_selector_sync()
         self._update_workspace_state()
 
+    def _remember_library_choice(self):
+        self._library_manually_set = True
+
     def _update_workspace_state(self) -> None:
         loaded = bool(self.datalist)
+        if not self._library_manually_set:
+            self._library_toggle.setChecked(loaded)
+            self._library_host.setVisible(loaded)
         for action in getattr(self, '_data_actions', []):
             action.setEnabled(loaded)
         self._generate_button.setEnabled(loaded)
@@ -782,6 +567,8 @@ class MainWindow(ProcessingController, BertFluentWindow):
         if empty is not None:
             empty.setVisible(not loaded)
             self.trendplot.setVisible(loaded)
+            self._trend_tools.setVisible(loaded)
+            self._shift_tools.setVisible(loaded and self._shift_disclosure.isChecked())
 
     def _schedule_cutoff_change(self, _frequency: int) -> None:
         if hasattr(self, '_jobs') and self.datalist:
@@ -876,22 +663,29 @@ class MainWindow(ProcessingController, BertFluentWindow):
             tb.addAction(action)
             self._plot_type_actions[value] = action
         tb.addSeparator()
-        fit = QToolButton()
-        fit.setText("Align peaks")
-        fit.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(fit)
+        tools = tb.addAction('Signal tools')
+        tools.setToolTip('Peak alignment, annotation mode and time shift')
+        menu = QMenu(tb)
+        tools.setMenu(menu)
+        tb.widgetForAction(tools).setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        align = menu.addMenu('Align peaks')
         for which in ('Max', 'Min'):
             for axis, name in enumerate('XYZ', 1):
                 callback = self.switch_to_fitmax if which == 'Max' else self.switch_to_fitmin
-                menu.addAction(f"{which} {name}", lambda checked=False, a=axis, cb=callback: cb(a))
-        fit.setMenu(menu)
-        tb.addWidget(fit)
+                align.addAction(f"{which} {name}", lambda checked=False, a=axis, cb=callback: cb(a))
         annotate = Action(FI.TAG, "Annotate", self)
         annotate.triggered.connect(self.switch_annot_mode)
-        tb.addAction(annotate)
+        menu.addAction(annotate)
+        tb.addSeparator()
         _add_chart_toolbar(tb, self.trendplot)
 
-        tb_shift = self._mk_toolbar("Time alignment")
+        self._trend_tools = tb
+        tb_shift = self._shift_tools = self._mk_toolbar("Time alignment")
+        self._shift_disclosure = menu.addAction('Time shift')
+        self._shift_disclosure.setCheckable(True)
+        self._shift_disclosure.toggled.connect(tb_shift.setVisible)
+        tb.hide()
+        tb_shift.hide()
         tb_shift.addWidget(QLabel(" Shift "))
         self._shift_combo = ComboBox()
         self._shift_combo.setMinimumWidth(90)
@@ -926,29 +720,32 @@ class MainWindow(ProcessingController, BertFluentWindow):
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        self._trend_empty = QWidget()
+        self._trend_empty = QFrame()
         self._trend_empty.setObjectName("emptyState")
         empty_layout = QVBoxLayout(self._trend_empty)
-        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title = QLabel("Start with an acceleration recording")
-        title.setObjectName("emptyTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint = QLabel("Load a raw DAQ file or a standard .sup recording.\n"
-                      "Compare traces, inspect peaks, and review all seven analysis views.")
-        hint.setObjectName("secondaryText")
-        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_layout.setContentsMargins(22, 22, 22, 22)
+        empty_layout.setSpacing(8)
+        empty_layout.addWidget(AtlasPlate(), 2)
+        empty_layout.addSpacing(12)
+        eyebrow = caption('GETTING STARTED')
+        title = caption('Open your first recording', 'emptyTitle')
+        hint = caption('Import a recording to inspect its three axes, compare runs and generate a report.', 'secondaryText')
         hint.setWordWrap(True)
-        add = PrimaryPushButton("Add raw data")
-        add.clicked.connect(self.open_raw_data)
+        add = self._import_button("Import recording")
+        add.setObjectName("emptyImportButton")
+        add.setIcon(FI.FOLDER_ADD.icon(theme=qfw.Theme.LIGHT))
+        empty_layout.addWidget(eyebrow)
         empty_layout.addWidget(title)
         empty_layout.addWidget(hint)
         empty_layout.addSpacing(12)
-        empty_layout.addWidget(add, 0, Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
+        empty_layout.addStretch(1)
+        empty_layout.addWidget(caption('SUPPORTED INPUTS     /     DAQ    ·    ACCELERATION / SUP    ·    SENSORCONNECT', 'formatKey'))
         content_layout.addWidget(self._trend_empty, 1)
         content_layout.addWidget(self.trendplot, 1)
         self.trendplot.hide()
         page = self._make_page("page_trend", [tb, tb_shift], content)
-        self.addSubInterface(page, NavIcon.TREND, "Trend")
+        self._add_chart_page(page, NavIcon.TREND, "Trend")
 
     # ------------------------------------------------------------------
     # Pages 3 & 4: ASTM F2291
@@ -972,7 +769,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         tb2.addWidget(self._sust_summary_host)
 
         page = self._make_page("page_astm_sust", [tb2], self.canvasASTMSust)
-        self.addSubInterface(page, NavIcon.SUST, "ASTM Sustained")
+        self._add_chart_page(page, NavIcon.SUST, "ASTM Sustained")
 
     def _setup_astm_egg_page(self) -> None:
         """Eggplot page — chart tools + analysis summary.
@@ -992,7 +789,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         tb2.addWidget(self._egg_summary_host)
 
         page = self._make_page("page_astm_egg", [tb2], self.canvasASTMEgg)
-        self.addSubInterface(page, NavIcon.EGG, "ASTM Eggplot")
+        self._add_chart_page(page, NavIcon.EGG, "ASTM Eggplot")
 
     def _build_control_panel(self) -> None:
         """Populate the shared control panel under the nav tabs.
@@ -1004,7 +801,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         / ``_prone_btn``), so no read-site rewiring is needed beyond the X/Y
         Reversal handler (which previously read its own _xr_* copies).
         """
-        lay = self.controlPanelLayout()
+        lay = self._ctrl_panel_layout
         heading = QLabel("ANALYSIS SETTINGS")
         heading.setObjectName("sectionHeading")
         lay.addWidget(heading)
@@ -1055,7 +852,8 @@ class MainWindow(ProcessingController, BertFluentWindow):
         self._analyze_btn.setStatusTip(
             "Analyze the currently-visible chart (switch tabs to analyze another)")
         self._analyze_btn.toggled.connect(self._toggle_active_page_analysis)
-        lay.addWidget(self._analyze_btn)
+        self._input_actions.addWidget(self._analyze_btn)
+        self._analyze_btn.setEnabled(bool(self.datalist))
         lay.addStretch(1)
 
         # Re-sync the Analyze button's checked state when the user switches
@@ -1342,7 +1140,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         tb2.addWidget(self._gb_summary_host)
 
         page = self._make_page("page_gb", [tb2], self.canvasGB)
-        self.addSubInterface(page, NavIcon.GB, "GB Contour")
+        self._add_chart_page(page, NavIcon.GB, "GB Contour")
 
     def _toggle_gb_analysis(self, checked: bool) -> None:
         """Toggle GB combined-chart analysis + refresh the toolbar summary."""
@@ -1440,7 +1238,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         tb2.addWidget(self._acczone_hint)
 
         page = self._make_page("page_acczone", [tb, tb2], self.canvasAccZone)
-        self.addSubInterface(page, NavIcon.ACC_ZONE, "Acc Zone")
+        self._add_chart_page(page, NavIcon.ACC_ZONE, "Acc Zone")
         # Seed the readout now that the widget exists.
         self._update_status_label()
 
@@ -1495,7 +1293,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
         tb2.addWidget(self._zr_summary_host)
 
         page = self._make_page("page_zreversal", [tb, tb2], self.canvasZReversal)
-        self.addSubInterface(page, NavIcon.Z_REVERSAL, "Z Reversal")
+        self._add_chart_page(page, NavIcon.Z_REVERSAL, "Z Reversal")
 
     def _setup_xyreversal_page(self) -> None:
         """X/Y-axis reversal analysis page (two stacked charts).
@@ -1553,7 +1351,7 @@ class MainWindow(ProcessingController, BertFluentWindow):
 
         page = self._make_page("page_xyreversal", [tb, tb2],
                                self.canvasXYReversal)
-        self.addSubInterface(page, NavIcon.XY_REVERSAL, "X/Y Reversal")
+        self._add_chart_page(page, NavIcon.XY_REVERSAL, "X/Y Reversal")
 
     # -- generate / analyze handlers ------------------------------------
 
@@ -1810,10 +1608,13 @@ class MainWindow(ProcessingController, BertFluentWindow):
         """Change one dataset's colour and recolour every chart it appears on.
 
         Called by the InfoCard colour swatch. Trend is recoloured in place
-        (no recompute); ASTM/GB/AccZone recolour their currently-plotted
+        (no recompute); analysis charts recolour their currently-plotted
         measured overlay only — so this is cheap and preserves zoom state.
         """
-        color_hex = color_hex.lower()
+        colour = QColor(color_hex)
+        if filename not in self.datadict or not colour.isValid():
+            return
+        color_hex = colour.name()
         self.dataset_colors[filename] = color_hex
 
         # 1) Trend — in-place pen swap, preserves data + zoom.
@@ -1831,8 +1632,12 @@ class MainWindow(ProcessingController, BertFluentWindow):
             self.canvasGB.recolor_measured(color_hex)
         if self.select_plot_tab4.currentText() == filename:
             self.canvasAccZone.recolor_measured(color_hex)
+        if self.select_plot_tab5.currentText() == filename:
+            self.canvasZReversal.recolor_measured(color_hex)
+        if self.select_plot_tab6.currentText() == filename:
+            self.canvasXYReversal.recolor_measured(color_hex)
 
-        # 3) Refresh the sidebar card's swatch + label stripe.
+        # 3) Refresh the sidebar card's colour swatch.
         for card in getattr(self, "stat_content", []):
             if getattr(card, "_data", None) is not None and \
                     getattr(card._data, "filename", None) == filename:

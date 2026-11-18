@@ -82,7 +82,7 @@ _ZONES = [
     {
         "verts": [(-0.7, 0.2), (5.0, 0.2), (5.0, 0.0), (0.0, 0.0)],
         "color": QColor("orange"),
-        "label": "Zone 3", "lx": 2.0, "ly": 0.1,
+        "label": "Zone 3", "lx": 1.5, "ly": 0.1,
     },
     # --- Zone 4 left (salmon): tall rectangle x∈[-5,-1.2] ---
     {

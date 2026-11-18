@@ -26,12 +26,13 @@ from qfluentwidgets import (
     PushButton, PrimaryPushButton, SmoothScrollArea,
 )
 
-import docx
-from docx.shared import Inches, RGBColor, Pt
+from report_document import AccelerationReport
+from report_lateral import render_lateral_figure
 
 from theme import theme_manager
 from sci_calculation import allowance_at_t0
 from accdata import detect_test_boundaries
+from segment_preview import SegmentPreview, TimeField
 
 
 class _ThemedDialog(QDialog):
@@ -116,291 +117,215 @@ def _apply_dialog_margins(layout: QVBoxLayout) -> None:
 # ---------------------------------------------------------------------------
 
 class TruncateTimeDialog(_ThemedDialog):
-    """Dialog for truncating acceleration data to one or more time windows.
-
-    A segment-count selector at the top controls how many (start, end) input
-    pairs are shown. On OK:
-      - 1 segment  → truncate the source dataset in place (legacy behaviour).
-      - N segments → deep-copy the source dataset once per segment, truncate
-        each copy to its window, and append each as a brand-new dataset in the
-        sidebar. The original dataset is left untouched.
-    """
+    """Review source-time windows before trimming or creating recordings."""
 
     def __init__(self, mainui, data, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Truncate Data")
-        self.setMinimumWidth(360)
-        self._mainui = mainui
-        self._data = data
+        self.setWindowTitle("Trim and split recording")
+        self.setMinimumWidth(570)
+        self._mainui, self._data = mainui, data
+        self._source_frame = data.data
+        self._data_start = float(data.data["Time"].iloc[0])
+        self._data_duration = float(data.data["Time"].iloc[-1]) + 1 / data.fs
+        self._auto_proposal = False
+        self._rebuilding = False
 
         layout = QVBoxLayout(self)
         _apply_dialog_margins(layout)
+        title = qfw.StrongBodyLabel(str(data.filename))
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        title.setWordWrap(True)
+        layout.addWidget(title)
+        self._preview = SegmentPreview(data, self._data_start, self._data_duration)
+        layout.addWidget(self._preview)
 
-        # --- Segment-count selector -------------------------------------
-        count_row = QFormLayout()
-        self._count = SpinBox()
-        self._count.setRange(1, 50)
-        self._count.setValue(1)
-        self._count.valueChanged.connect(self._rebuild_time_rows)
-        count_row.addRow("Number of segments:", self._count)
-        layout.addLayout(count_row)
-
-        # --- Auto-detect + sensitivity ----------------------------------
-        # Auto-Detect runs the stop-time detector on the recording and fills in
-        # the segment start/end times. The min-gap slider controls how long a
-        # quiet period must be to count as a test boundary (longer = fewer,
-        # coarser splits; shorter = more, finer splits). Default 10s matches
-        # the validated separation between real boundaries (~30s) and
-        # intra-test pauses (~3s).
-        detect_row = QHBoxLayout()
-        detect_row.setSpacing(8)
-        self._auto_detect_btn = PrimaryPushButton("Auto-Detect")
-        self._auto_detect_btn.setStatusTip(
-            "Detect stop-times between tests and fill the segments")
-        self._auto_detect_btn.clicked.connect(self._on_auto_detect)
-        detect_row.addWidget(self._auto_detect_btn)
-        detect_row.addWidget(QLabel("Min gap:"))
+        controls = QHBoxLayout()
+        controls.addWidget(QLabel("Quiet gap"))
         self._min_gap_spin = DoubleSpinBox()
         self._min_gap_spin.setRange(1.0, 120.0)
-        self._min_gap_spin.setSingleStep(1.0)
         self._min_gap_spin.setDecimals(1)
         self._min_gap_spin.setSuffix(" s")
         self._min_gap_spin.setValue(10.0)
-        self._min_gap_spin.setToolTip(
-            "Minimum quiet-run duration (s) that counts as a test boundary.\n"
-            "Higher = fewer splits; lower = more splits.")
-        detect_row.addWidget(self._min_gap_spin)
-        detect_row.addStretch(1)
-        layout.addLayout(detect_row)
+        self._min_gap_spin.setToolTip("Minimum stop between tests. Increase to make fewer splits.")
+        controls.addWidget(self._min_gap_spin)
+        self._auto_detect_btn = PushButton("Auto-detect")
+        self._auto_detect_btn.clicked.connect(self._on_auto_detect)
+        controls.addWidget(self._auto_detect_btn)
+        controls.addStretch()
+        controls.addWidget(QLabel("Segments"))
+        self._count = SpinBox()
+        self._count.setRange(1, 50)
+        controls.addWidget(self._count)
+        layout.addLayout(controls)
 
-        # --- Replace-original toggle -------------------------------------
-        # When ON (default), applying a multi-segment truncate removes the
-        # source dataset after adding the truncated segments, so the original
-        # (un-split) curve doesn't linger alongside its splits. Only applies to
-        # the multi-segment path (1 segment mutates the source in place anyway).
-        self._replace_original = CheckBox("Replace original after split")
-        self._replace_original.setChecked(True)
-        self._replace_original.setToolTip(
-            "Remove the source dataset once the truncated segments are added,\n"
-            "so only the split results remain. Uncheck to keep the original.")
-        layout.addWidget(self._replace_original)
-
-        # --- Scrollable time-window form --------------------------------
-        # A scroll area keeps the dialog usable when many segments are added.
+        self._notice = QLabel("Set the start and end times, or detect segments from pauses.")
+        self._notice.setWordWrap(True)
+        self._notice.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self._notice)
         self._scroll = SmoothScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(SmoothScrollArea.Shape.NoFrame)
-
-        form_host = QWidget()
-        self._form = QFormLayout(form_host)
-        self._form.setContentsMargins(0, 0, 0, 0)
+        host = QWidget()
+        self._form = QFormLayout(host)
+        self._form.setContentsMargins(0, 0, 8, 0)
         self._form.setSpacing(8)
-
-        # Per-segment start/end spinboxes, created/destroyed by _rebuild.
-        self._start_spins: list = []
-        self._end_spins: list = []
-
-        self._scroll.setWidget(form_host)
+        self._scroll.setWidget(host)
         layout.addWidget(self._scroll)
+        self._start_spins, self._end_spins, self._keeps = [], [], []
 
-        # Data duration (seconds) — used to seed sensible end-time defaults so
-        # the user doesn't have to look up how long the recording is.
-        try:
-            self._data_start = float(self._data.data["Time"].iloc[0])
-            self._data_duration = float(self._data.data["Time"].iloc[-1]) + 1 / self._data.fs
-        except Exception:
-            self._data_start = 0.0
-            self._data_duration = 100000.0
-
-        # Build the initial single row.
-        self._rebuild_time_rows(1)
-        # Seed a useful default for the first segment: end = full duration, so
-        # segment 2+ auto-fill their start from it as the user adds rows.
-        if self._end_spins:
-            self._end_spins[0].setValue(self._data_duration)
-        # Establish Tab-key navigation order across every input (see
-        # _set_tab_order). Re-run whenever rows change (it depends on row count).
-        self._set_tab_order()
-
-        # --- OK / Cancel ------------------------------------------------
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
+        self._replace_original = CheckBox("Remove original after creating segments")
+        self._replace_original.setChecked(False)
+        layout.addWidget(self._replace_original)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self._apply_button = buttons.button(QDialogButtonBox.Ok)
         buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self._count.valueChanged.connect(self._rebuild_time_rows)
+        self._rebuild_time_rows(1)
 
-    # ------------------------------------------------------------------
-    # Dynamic segment rows
-    # ------------------------------------------------------------------
+    def _windows(self):
+        return [(i, a.seconds(), b.seconds()) for i, (a, b, keep) in
+                enumerate(zip(self._start_spins, self._end_spins, self._keeps), 1)
+                if keep.isChecked()]
 
-    def _rebuild_time_rows(self, n: int) -> None:
-        """Rebuild exactly *n* (start, end) rows in the form.
+    def _sync_preview(self, *_):
+        if self._rebuilding:
+            return
+        windows = self._windows()
+        self._preview.set_windows([(a, b) for _, a, b in windows if b > a])
+        creates_copies = self._count.value() > 1 or self._auto_proposal
+        self._replace_original.setVisible(creates_copies)
+        self._apply_button.setText(("Create segment" if len(windows) == 1 else
+                                    f"Create {len(windows)} segments")
+                                   if creates_copies else "Trim original")
+        self._apply_button.setEnabled(bool(windows))
 
-        PRESERVES existing start/end values across the rebuild (the old code
-        wiped everything, which would discard segment 1's end just when the
-        user wants segment 2 to inherit it). New rows beyond the previous count
-        auto-fill their start time from the PREVIOUS segment's end — so defining
-        contiguous laps requires entering only the end times.
-        """
-        # Snapshot the previous values before tearing the rows down.
-        prev_start = [sp.value() for sp in self._start_spins]
-        prev_end = [sp.value() for sp in self._end_spins]
-
+    def _rebuild_time_rows(self, n, proposals=None):
+        self._rebuilding = True
+        previous = [(a.seconds(), b.seconds(), k.isChecked()) for a, b, k in
+                    zip(self._start_spins, self._end_spins, self._keeps)]
         while self._form.rowCount():
             self._form.removeRow(0)
         self._start_spins.clear()
         self._end_spins.clear()
-
+        self._keeps.clear()
         for i in range(n):
-            start = DoubleSpinBox()
-            start.setDecimals(4)
-            start.setSingleStep(1 / self._data.fs)
-            start.setRange(-100000, 100000)
-            start.setSuffix(" s")
-            end = DoubleSpinBox()
-            end.setDecimals(4)
-            end.setSingleStep(1 / self._data.fs)
-            end.setRange(-100000, 100000)
-            end.setSuffix(" s")
-
-            # Restore the previous value if this row existed before; otherwise
-            # auto-fill: start = previous segment's end (contiguous laps),
-            # end = full duration (a reasonable default).
-            if i < len(prev_start):
-                start.setValue(prev_start[i])
-                end.setValue(prev_end[i])
+            if proposals is not None:
+                a, b = proposals[i]
+                included = True
+            elif i < len(previous):
+                a, b, included = previous[i]
             else:
-                # Newly added row: start = the previous row's END. Use the
-                # freshly-restored spinbox (prev_end may be shorter than i),
-                # so the chain stays contiguous even when the user jumps from
-                # e.g. 1 segment straight to 3.
-                prev_end_val = (self._end_spins[i - 1].value()
-                                if i > 0 and self._end_spins else self._data_start)
-                start.setValue(prev_end_val)
-                end.setValue(self._data_duration)
-
+                a = self._end_spins[-1].seconds() if i else self._data_start
+                b, included = self._data_duration, True
+            times = self._source_frame["Time"].to_numpy()
+            start = TimeField(times, self._data_duration, self._data.fs)
+            end = TimeField(times, self._data_duration, self._data.fs)
+            start.set_seconds(a)
+            end.set_seconds(b)
+            for field, label in ((start, "Start"), (end, "End (exclusive)")):
+                field.setAccessibleName(f"Segment {i + 1}: {label}")
+                field.setToolTip(label + " in source seconds")
+            keep = CheckBox(f"Segment {i + 1}")
+            keep.setChecked(included)
             row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(8)
             row.addWidget(start)
-            row.addWidget(end, 1)
-            self._form.addRow(f"Segment {i + 1}  (start / end):", row)
+            row.addWidget(QLabel("to"))
+            row.addWidget(end)
+            self._form.addRow(keep, row)
             self._start_spins.append(start)
             self._end_spins.append(end)
+            self._keeps.append(keep)
+            start.setEnabled(included)
+            end.setEnabled(included)
+            keep.toggled.connect(start.setEnabled)
+            keep.toggled.connect(end.setEnabled)
+            keep.toggled.connect(self._sync_preview)
+            start.secondsChanged.connect(self._sync_preview)
+            end.secondsChanged.connect(self._sync_preview)
+        # Link contiguous manual laps only. An edit must not fill a detected
+        # pause or overwrite a deliberately independent start time.
+        if not self._auto_proposal:
+            for end, following in zip(self._end_spins, self._start_spins[1:]):
+                def move_seam(value, nxt=following, previous_end=[end.seconds()]):
+                    if nxt.seconds() == previous_end[0]:
+                        nxt.set_seconds(value)
+                    previous_end[0] = value
+                end.secondsChanged.connect(move_seam)
+        self._scroll.setMinimumHeight(min(44 * n + 12, 220))
+        self._rebuilding = False
+        self._sync_preview()
 
-        # Cascade: editing an end time pushes it into the NEXT segment's start
-        # so contiguous laps stay linked as the user types. Connected after the
-        # rebuild so each end spinbox targets the correct next start spinbox.
-        # Spinboxes are freshly created each rebuild, so there's nothing to
-        # disconnect — connecting here is enough.
-        for i, end_sp in enumerate(self._end_spins[:-1]):
-            next_start = self._start_spins[i + 1]
-            end_sp.valueChanged.connect(
-                lambda v, ns=next_start: ns.setValue(v))
-
-        self._adjust_height()
-        self._set_tab_order()
-
-    def _set_tab_order(self) -> None:
-        """Set Tab-key focus order: segment 1 start → end → segment 2 start →
-        end → … so the user can walk every input with the keyboard only.
-        """
-        prev = None
-        for s, e in zip(self._start_spins, self._end_spins):
-            if prev is not None:
-                self.setTabOrder(prev, s)
-            self.setTabOrder(s, e)
-            prev = e
-
-    def _adjust_height(self) -> None:
-        """Keep the dialog a sensible height for the current segment count."""
-        n = self._count.value()
-        # ~56px per segment row + ~180px chrome; capped so huge counts scroll.
-        self._scroll.setMinimumHeight(min(56 * n + 40, 320))
-
-    def _on_auto_detect(self) -> None:
-        """Run the stop-time detector and fill the segment rows.
-
-        Detects test boundaries from quiet periods in the recording, sets the
-        segment count, and populates each segment's start/end times. The
-        values remain user-editable afterwards (this just pre-fills them).
-        """
-        if self._data is None:
-            return
+    def _on_auto_detect(self):
         try:
-            min_gap = float(self._min_gap_spin.value())
-            tests = detect_test_boundaries(self._data, min_gap_s=min_gap)
-        except Exception as e:
-            print(f"Auto-detect error: {e}")
+            tests = detect_test_boundaries(self._data, min_gap_s=self._min_gap_spin.value())
+        except Exception as error:
+            self._notice.setText(f"Detection failed: {error}. Current entries were kept.")
             return
         if not tests:
-            self._mainui.statusBar().showMessage(
-                "No tests detected (recording too short)", 4000)
+            for keep in self._keeps:
+                keep.setChecked(False)
+            self._notice.setText("No segments suggested. To use a manual window, "
+                                 "check its box and review the times.")
             return
-        # Set the segment count (triggers _rebuild_time_rows, which preserves
-        # old values — then we overwrite below). Cap at the spinbox maximum.
+        if len(tests) > self._count.maximum():
+            self._notice.setText(f"Found {len(tests)} segments; only {self._count.maximum()} "
+                                 "can be reviewed at once. Increase the quiet gap or trim "
+                                 "a shorter recording. Current entries were kept.")
+            return
+        self._auto_proposal = True
+        self._count.blockSignals(True)
         self._count.setValue(len(tests))
-        # Now fill each segment's start/end with the detected boundaries.
-        for i, (s, e) in enumerate(tests):
-            if i >= len(self._start_spins):
-                break
-            self._start_spins[i].setValue(s)
-            self._end_spins[i].setValue(e)
-        self._mainui.statusBar().showMessage(
-            f"Auto-detected {len(tests)} test(s)", 4000)
+        self._count.blockSignals(False)
+        self._rebuild_time_rows(len(tests), proposals=tests)
+        label = "segment" if len(tests) == 1 else "segments"
+        self._notice.setText(f"Found {len(tests)} {label}. Review the times and uncheck "
+                             "any segment you want to omit.")
 
-    # ------------------------------------------------------------------
-    # Apply
-    # ------------------------------------------------------------------
-
-    def _on_ok(self) -> None:
+    def _on_ok(self):
+        windows = self._windows()
+        if not windows:
+            return
         try:
-            requested = self._count.value()
-            pairs = [
-                (self._start_spins[i].value(), self._end_spins[i].value())
-                for i in range(requested)
-            ]
-            # Drop empty (start>=end) windows; treat them as "unused".
-            valid = [(s, e) for s, e in pairs if e > s]
-            if not valid:
-                self.reject()
-                return
-
-            if requested == 1:
-                # Legacy single-segment path: mutate the source in place.
-                s, e = valid[0]
-                self._data.truncate_data(starttime=s, endtime=e,
-                                         cutoff=self._mainui.cutoff)
+            if (self._mainui.datadict.get(self._data.filename) is not self._data or
+                    self._data.data is not self._source_frame):
+                raise ValueError("The recording changed. Reopen Trim and split to review it.")
+            times = self._source_frame["Time"].to_numpy()
+            last_end = None
+            for i, start, end in windows:
+                if start < self._data_start or end > self._data_duration or start >= end:
+                    raise ValueError(f"Segment {i}: enter a start before the end, inside the recording.")
+                if last_end is not None and start < last_end:
+                    raise ValueError(f"Segment {i}: selected windows must be in order and cannot overlap.")
+                lo, hi = times.searchsorted([start, end])
+                if hi - lo < 2:
+                    raise ValueError(f"Segment {i}: the window must contain at least two samples.")
+                last_end = end
+            if self._count.value() == 1 and not self._auto_proposal:
+                _, start, end = windows[0]
+                self._data.truncate_data(start, end, self._mainui.cutoff)
                 self._mainui.trendplot.initplotxyz()
                 self._mainui.clear_sidebar()
                 self._mainui.replot_all()
             else:
-                # Multi-segment: each valid window becomes its own new dataset.
-                base_name = self._data.filename
-                # Remember the source's position so we can drop it afterwards
-                # (the clones are appended after it, so its index is stable).
-                src_order = self._mainui._plot_order_of(base_name)
-                for i, (s, e) in enumerate(valid, 1):
+                # Prepare every selected slice before exposing any to the library.
+                clones = []
+                for i, start, end in windows:
                     clone = copy.deepcopy(self._data)
-                    clone.truncate_data(starttime=s, endtime=e,
-                                        cutoff=self._mainui.cutoff)
-                    clone.filename = f"{base_name} [Trunc {s}-{e}s #{i}]"
+                    clone.truncate_data(start, end, self._mainui.cutoff)
+                    clone.filename = f"{self._data.filename} [Trunc {start:.8g}-{end:.8g}s #{i}]"
+                    clones.append(clone)
+                for clone in clones:
                     self._mainui.set_datalist(clone)
-                    self._mainui.add_trend_data(
-                        data=self._mainui.datalist[-1],
-                        plottype=self._mainui.plottype,
-                        plot_order=len(self._mainui.datalist),
-                    )
-                # Optionally remove the source so only the split results remain.
-                if (self._replace_original.isChecked() and src_order > 0):
-                    self._mainui._remove_dataset(src_order)
-                self._mainui.statusBar().showMessage(
-                    f"Added {len(valid)} truncated datasets", 4000)
+                    self._mainui.add_trend_data(clone, self._mainui.plottype,
+                                                len(self._mainui.datalist))
+                if self._replace_original.isChecked():
+                    self._mainui._remove_dataset(self._mainui._plot_order_of(self._data.filename))
+                self._mainui.statusBar().showMessage(f"Created {len(clones)} segment(s)", 4000)
             self.accept()
-        except Exception as e:
-            print(f"Truncate error: {e}")
-            self._mainui.statusBar().showMessage(f"Cannot truncate: {e}", 6000)
+        except Exception as error:
+            self._notice.setText(str(error))
 
 
 # ---------------------------------------------------------------------------
@@ -728,7 +653,7 @@ class CutoffFrequencyDialog(_ThemedDialog):
 
 def _render_view_figure(view, out_path: str, w: int, h: int,
                         before_render=None) -> bool:
-    """把一个 QChartView 临时固定成报告画幅 (w, h) 后截图渲染成 JPG。
+    """把一个 QChartView 临时固定成报告画幅 (w, h) 后截图渲染成 PNG。
 
     两条已踩过的坑，说明为什么是"固定视图尺寸 + grab"：
     1. 直接截 UI 里的子图控件：宽高比被布局绑架（egg 三列并排又窄又高、
@@ -757,7 +682,7 @@ def _render_view_figure(view, out_path: str, w: int, h: int,
             except Exception as e:
                 print(f"before_render error: {e}")
             QCoreApplication.processEvents()
-        ok = view.grab().save(out_path, "JPG", 95)
+        ok = view.grab().save(out_path, "PNG")
         return ok
     except Exception as e:
         print(f"View render error: {e}")
@@ -772,13 +697,37 @@ def _render_view_figure(view, out_path: str, w: int, h: int,
             pass
 
 
-def _grab_widget(widget, out_path: str) -> bool:
-    """整控件截图（仅 Trend 用：三联时序整体对比，构图不受拆分影响）。"""
+def _render_trend_figure(frame, color, out_path: str):
+    """Draw one recording onto a fresh canvas at print size.
+
+    Capturing the live trend immediately after resetting its three viewports
+    can composite their previous axes over the new ones. The report also needs
+    the selected recording even if its trace is hidden in the workspace.
+    """
+    from PySide6.QtCore import QEvent
+    from chart_trend import TrendChartView
+
+    figure = TrendChartView()
     try:
-        return widget.grab().save(out_path, "JPG", 95)
-    except Exception as e:
-        print(f"Image save error: {e}")
-        return False
+        figure.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        figure.setFixedSize(960, 560)
+        figure.addplotxyz(frame, 1, color)
+        _disable_series_opengl([figure])
+        for chart, label in [(figure._chart_x, "Fore/aft (g)"),
+                             (figure._chart_y, "Lateral (g)"),
+                             (figure._chart_z, "Vertical (g)")]:
+            chart.axis_y.setTitleText(label)
+            chart.axis_x.setTitleText("Time (s)" if chart is figure._chart_z else "")
+        figure.show()
+        figure.layout().activate()
+        if not figure.grab().save(out_path, "PNG"):
+            raise OSError("Could not save the trend figure")
+    finally:
+        figure.close()
+        figure.deleteLater()
+        # Multi-record exports run in a single GUI callback. Release this
+        # recording's full-resolution series before moving on to the next.
+        QCoreApplication.sendPostedEvents(figure, QEvent.Type.DeferredDelete)
 
 
 def _egg_equalize_to_data(chart):
@@ -895,53 +844,63 @@ class ReportDialog(_ThemedDialog):
     """Dialog for selecting datasets and generating a Word report."""
 
     def __init__(self, mainui, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Generate Report")
-        self.setMinimumWidth(420)
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QGridLayout
+
+        super().__init__(parent or mainui)
+        self.setWindowTitle("Word report")
+        # The displayed analysis settings stay in effect until export or cancel.
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setMinimumWidth(520)
         self._mainui = mainui
         self._checkboxes: list = []
 
         layout = QVBoxLayout(self)
         _apply_dialog_margins(layout)
-
-        layout.addWidget(QLabel("Select Acceleration Records to Generate:"))
-        notice = QLabel(
-            "Please specify restraint type in advance for ASTM Standard Fit "
-            "and make sure to use filtered and zero-adjusted data."
-        )
-        notice.setWordWrap(True)
-        notice.setStyleSheet(
-            "color: {warn}; background-color: {glass}; "
-            "border: 1px solid {warn}; border-top: 1px solid {shine}; "
-            "border-radius: 12px; padding: 8px; font-style: italic;".format(
-                warn=theme_manager.t("warning"),
-                glass=theme_manager.t("glass_bg_subtle"),
-                shine=theme_manager.t("glass_shine"),
-            )
-        )
-        layout.addWidget(notice)
+        layout.addWidget(qfw.SubtitleLabel("Create a Word report"))
+        plot = {"Standard": "Calibrated", "Filter": "Filtered", "Raw": "Raw"}[mainui.plottype]
+        summary = QLabel(
+            f"Signal: {plot}   ·   Low-pass setting: {mainui.cutoff_spin.value()} Hz\n"
+            f"Restraint: {mainui.select_restraint.currentText()}   ·   Condition: "
+            f"{mainui.select_cond.currentText()}\nHeight: {mainui.height_input.value()} in   ·   "
+            f"Prone: {'Yes' if mainui._prone_btn.isChecked() else 'No'}")
+        summary.setWordWrap(True)
+        tk = theme_manager.tokens
+        summary.setStyleSheet(
+            f"color: {tk['text']}; background: {tk['window_bg']}; "
+            f"border: 1px solid {tk['divider']}; border-radius: 6px; padding: 8px 12px;")
+        layout.addWidget(summary)
 
         # Scrollable checkbox list
+        layout.addWidget(qfw.StrongBodyLabel("Recordings"))
         scroll = SmoothScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setMinimumHeight(68)
+        scroll.setMaximumHeight(160)
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
+        active = mainui.select_data.currentText()
         for name in mainui.datadict.keys():
             cb = CheckBox(name)
+            cb.setChecked(name == active)
+            cb.setToolTip(name)
             self._checkboxes.append(cb)
             scroll_layout.addWidget(cb)
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, 1)
+        current_box = next((cb for cb in self._checkboxes if cb.isChecked()), None)
+        if current_box is not None:
+            QTimer.singleShot(0, self, lambda: scroll.ensureWidgetVisible(current_box))
 
         # ---- Report module selection -------------------------------------
         # 7 modules map 1:1 onto the report sections AND the canvases the
         # generation loop plots/analyzes. An unchecked module is skipped
         # entirely — not plotted, not screenshotted, not written — which also
         # speeds up generation. Defaults keep the previous all-in behavior.
-        layout.addWidget(QLabel("Report Modules:"))
+        layout.addWidget(qfw.StrongBodyLabel("Report sections"))
         module_defs = [
-            ("trend",   "Trend Plot (+ stats table)"),
+            ("trend",   "Trend and signal statistics"),
             ("sust",    "ASTM Sustained Acceleration"),
             ("egg",     "ASTM Eggplot"),
             ("gb",      "GB 8408 Fitting"),
@@ -951,21 +910,37 @@ class ReportDialog(_ThemedDialog):
         ]
         self._module_boxes: dict = {}
         mod_widget = QWidget()
-        mod_layout = QVBoxLayout(mod_widget)
-        mod_layout.setContentsMargins(8, 0, 0, 0)
-        for mod_key, mod_label in module_defs:
+        mod_layout = QGridLayout(mod_widget)
+        mod_layout.setContentsMargins(0, 0, 0, 0)
+        for index, (mod_key, mod_label) in enumerate(module_defs):
             mod_cb = CheckBox(mod_label)
             mod_cb.setChecked(True)
             self._module_boxes[mod_key] = mod_cb
-            mod_layout.addWidget(mod_cb)
+            mod_layout.addWidget(mod_cb, index % 4, index // 4)
         layout.addWidget(mod_widget)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._on_ok)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        footer = QHBoxLayout()
+        count = QLabel()
+        footer.addWidget(count, 1)
+        cancel = PushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        footer.addWidget(cancel)
+        generate = PrimaryPushButton("Generate Word report")
+        generate.setDefault(True)
+        generate.clicked.connect(self._on_ok)
+        footer.addWidget(generate)
+        layout.addLayout(footer)
+
+        def update_selection():
+            recordings = sum(cb.isChecked() for cb in self._checkboxes)
+            sections = sum(cb.isChecked() for cb in self._module_boxes.values())
+            generate.setEnabled(bool(recordings and sections))
+            count.setText(f"{recordings} recording{'s' if recordings != 1 else ''} · "
+                          f"{sections} section{'s' if sections != 1 else ''}")
+
+        for cb in [*self._checkboxes, *self._module_boxes.values()]:
+            cb.toggled.connect(update_selection)
+        update_selection()
 
     def _on_ok(self) -> None:
         # 生成期间会泵事件循环（见下方 processEvents），期间用户可能再点
@@ -1000,7 +975,7 @@ class ReportDialog(_ThemedDialog):
             return
 
         mu = self._mainui
-        doc = docx.Document()
+        doc = AccelerationReport(len(data_list))
 
         # 让用户选择输出路径：打包版（console=False）的进程 CWD 可能是只读的
         # 安装目录，固定相对名既可能写不进去，也会静默覆盖同名旧文件。默认名
@@ -1065,12 +1040,16 @@ class ReportDialog(_ThemedDialog):
                 # Unchecked modules are skipped entirely: not plotted, not
                 # analyzed, not captured — faster, and no stale canvas state
                 # gets written into the report.
-                if mods.get("sust", True):
-                    mu.plotASTM_checkbox(canvas=mu.canvasASTMSust, name=data_name)
-                if mods.get("egg", True):
-                    mu.plotASTM_checkbox(canvas=mu.canvasASTMEgg, name=data_name)
+                # Plot directly: the UI convenience wrappers swallow exceptions,
+                # which could export the preceding recording's chart as this one.
+                for key, canvas in (("sust", mu.canvasASTMSust), ("egg", mu.canvasASTMEgg)):
+                    if mods[key]:
+                        canvas.addplotxyz(data=mu._select_data(data), restraint=restraint,
+                                          cond=cond, input_height=height, prone=prone,
+                                          color=mu.dataset_colors.get(data_name))
                 if mods.get("gb", True):
-                    mu.plotGB_checkbox(canvas=mu.canvasGB, name=data_name)
+                    mu.canvasGB.addplotxyz(data=mu._select_data(data),
+                                           color=mu.dataset_colors.get(data_name))
                 # Acc Zone 分析强制 1 Hz 数据：与主窗口 _generate_acczone 同口径
                 # （calculate_sampling_frequency → get_1hz_standard_frame），不能
                 # 走 plotGB_checkbox→_select_data —— 后者按全局 plottype 选帧，
@@ -1081,8 +1060,6 @@ class ReportDialog(_ThemedDialog):
                     df_acczone = data.get_1hz_standard_frame()
                     mu.canvasAccZone.addplotxyz(
                         data=df_acczone, color=mu.dataset_colors.get(data_name))
-                if mods.get("trend", True):
-                    mu.replot_single(data_name)
 
                 # Reversal charts. Plot the standard frame at the current
                 # cutoff, then set allowance/deadband so Analyze has the right
@@ -1122,7 +1099,7 @@ class ReportDialog(_ThemedDialog):
                     mu.canvasXYReversal.toggle_analysis(True)
 
                 # --- Gather verdicts (pass/fail + message) -------------------
-                verdicts = self._collect_verdicts(mu)
+                verdicts = self._collect_verdicts(mu, mods)
 
                 # --- 泵事件循环 + 显式等比例：让延迟任务在截图前跑完 --------
                 # egg/GB/AccZone 的等比例（equalize_eggs / equalize_comb /
@@ -1151,7 +1128,6 @@ class ReportDialog(_ThemedDialog):
                 gl_series.extend(_disable_series_opengl([
                     mu.canvasASTMSust, mu.canvasASTMEgg, mu.canvasGB,
                     mu.canvasAccZone, mu.canvasZReversal, mu.canvasXYReversal,
-                    mu.trendplot,
                 ]))
                 # 子图控件的宽高比由界面布局决定（三列并排的 egg 又窄又高、
                 # GB 合成图又扁又长），直接截图放进 Word 很难看。这里把视图
@@ -1170,9 +1146,14 @@ class ReportDialog(_ThemedDialog):
                              ("az", "az vs dt")], 1):
                         view = mu.canvasASTMSust._views.get(key)
                         ch = mu.canvasASTMSust._charts.get(key)
+                        if key == "ay" and ch is not None:
+                            filename = f"img_sust_{i}.png"
+                            render_lateral_figure(ch, restraint, _p(filename))
+                            entries.append(("Signed lateral acceleration by duration", filename, []))
+                            continue
                         if view is not None and _render_view_figure(
-                                view, _p(f"img_sust_{i}.jpg"), 1100, 480):
-                            entries.append((label, f"img_sust_{i}.jpg",
+                                view, _p(f"img_sust_{i}.png"), 1100, 480):
+                            entries.append((label, f"img_sust_{i}.png",
                                             _chart_legend_entries(ch)
                                             if ch is not None else []))
                     if entries:
@@ -1196,10 +1177,10 @@ class ReportDialog(_ThemedDialog):
                         ch = mu.canvasASTMEgg._charts.get(key)
                         ew, eh = egg_sizes[key]
                         if view is not None and _render_view_figure(
-                                view, _p(f"img_egg_{i}.jpg"), ew, eh,
+                                view, _p(f"img_egg_{i}.png"), ew, eh,
                                 before_render=(_egg_equalize_to_data(ch)
                                                if ch is not None else None)):
-                            entries.append((egg_labels[key], f"img_egg_{i}.jpg",
+                            entries.append((egg_labels[key], f"img_egg_{i}.png",
                                             _chart_legend_entries(ch)
                                             if ch is not None else []))
                     if entries:
@@ -1221,28 +1202,30 @@ class ReportDialog(_ThemedDialog):
                     for i, (attr, label, w, h) in enumerate(gb_specs, 1):
                         view = getattr(mu.canvasGB, attr, None)
                         if view is not None and _render_view_figure(
-                                view, _p(f"img_gb_{i}.jpg"), w, h):
-                            entries.append((label, f"img_gb_{i}.jpg",
+                                view, _p(f"img_gb_{i}.png"), w, h):
+                            entries.append((label, f"img_gb_{i}.png",
                                             _chart_legend_entries(view.chart())))
                     if entries:
                         sections["gb"] = entries
 
                 if mods.get("acczone", True) and _render_view_figure(
-                        mu.canvasAccZone, _p("img_acczone.jpg"), 1200, 640):
+                        mu.canvasAccZone, _p("img_acczone.png"), 1200, 640):
                     sections["acczone"] = [
-                        (None, "img_acczone.jpg",
+                        (None, "img_acczone.png",
                          _chart_legend_entries(mu.canvasAccZone.chart()))]
 
-                if mods.get("trend", True) and _grab_widget(
-                        mu.trendplot, _p("img_trend.jpg")):
-                    sections["trend"] = [(None, "img_trend.jpg", None)]
+                if mods.get("trend", True):
+                    _render_trend_figure(mu._select_data(data),
+                                         mu.dataset_colors.get(data_name, "#2563EB"),
+                                         _p("img_trend.png"))
+                    sections["trend"] = [(None, "img_trend.png", None)]
 
                 if mods.get("zr", True):
                     sub = getattr(mu.canvasZReversal, "_chart_z", None)
                     if sub is not None and _render_view_figure(
-                            sub, _p("img_zr.jpg"), 1200, 500):
+                            sub, _p("img_zr.png"), 1200, 500):
                         sections["zr"] = [
-                            (None, "img_zr.jpg", _chart_legend_entries(sub.chart()))]
+                            (None, "img_zr.png", _chart_legend_entries(sub.chart()))]
 
                 if mods.get("xr", True):
                     entries = []
@@ -1251,17 +1234,15 @@ class ReportDialog(_ThemedDialog):
                              ("_chart_y", "Y (Lateral)")], 1):
                         sub = getattr(mu.canvasXYReversal, attr, None)
                         if sub is not None and _render_view_figure(
-                                sub, _p(f"img_xr_{i}.jpg"), 1100, 480):
-                            entries.append((label, f"img_xr_{i}.jpg",
+                                sub, _p(f"img_xr_{i}.png"), 1100, 480):
+                            entries.append((label, f"img_xr_{i}.png",
                                             _chart_legend_entries(sub.chart())))
                     if entries:
                         sections["xr"] = entries
 
-                mu.trendplot.initplotxyz()
-                mu.clear_sidebar()
-                mu.replot_all()
-                self._write_doc_section(doc, data, data_name, verdicts, tmpdir,
-                                        mods, sections)
+                doc.add_record(data, data_name, verdicts, tmpdir, mods, sections,
+                               plot_type=mu.plottype, cutoff=mu.cutoff, restraint=restraint,
+                               condition=cond, height=height, prone=prone)
 
             try:
                 doc.save(out_path)
@@ -1322,68 +1303,47 @@ class ReportDialog(_ThemedDialog):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     @staticmethod
-    def _collect_verdicts(mu) -> dict:
-        """Build {chart_key: (passed_bool, message_str)} from canvas state.
-
-        Called AFTER every canvas has been plotted + analyzed. Each verdict
-        becomes a green/red line below that chart's image in the report.
-        """
-        v: dict = {}
-
-        # ASTM Sustained — failed axes (e.g. "ax (+)").
-        sust = sorted(getattr(mu.canvasASTMSust, "sust_failed_rules", set()))
-        if sust:
-            v["sust"] = (False, "exceeded limit: " + ", ".join(sust))
-        else:
-            v["sust"] = (True, "all axes within limit")
-
-        # ASTM Eggplot — failed boundary rules.
-        egg = sorted(getattr(mu.canvasASTMEgg, "failed_rules", set()))
-        if egg:
-            txt = ", ".join(r.replace("(0.2s)", "0.2s").replace("(0s)", "0s")
-                            for r in egg)
-            v["egg"] = (False, "out of boundary: " + txt)
-        else:
-            v["egg"] = (True, "all points within boundary")
-
-        # GB 8408 — failed dt loops.
-        gb = sorted(getattr(mu.canvasGB, "failed_rules", set()))
-        if gb:
-            txt = ", ".join(r.replace("(0.2s)", "0.2s").replace("(0.1s)", "0.1s")
-                            .replace("(0.05s)", "0.05s").replace("(0s)", "0s")
-                            for r in gb)
-            v["gb"] = (False, "exceeded: " + txt)
-        else:
-            v["gb"] = (True, "all points within loops")
-
-        # AccZone — this is a CLASSIFICATION (which zone the ride falls in),
-        # not a pass/fail check, so report it as informational, not PASS/FAIL.
-        zn = getattr(mu.canvasAccZone, "_auto_zone_result", None)
-        if zn is not None:
-            v["acczone"] = ("info", f"Classified as Zone {zn}")
-        else:
-            v["acczone"] = ("info", "No zone classified")
-
-        # Z Reversal — the rule IS the detection: a recognized acceleration-
-        # reversal pattern (down-then-up crossing 0 and exceeding 2 g within the
-        # time window) is itself the failure signature, so ANY detected event is
-        # a FAIL. Unlike X/Y Reversal there is no per-event allowance check.
-        zr_n = int(getattr(mu.canvasZReversal, "event_count", 0))
-        if zr_n > 0:
-            v["zr"] = (False, f"{zr_n} Z-reversal pattern(s) detected")
-        else:
-            v["zr"] = (True, "no Z-reversal pattern detected")
-
-        # X/Y Reversal — FAIL if any pair exceeded its effective limit; a
-        # detected reversal that stays within its allowance is NOT a violation.
-        xr_fail = int(getattr(mu.canvasXYReversal, "fail_count", 0))
-        xr_n = int(getattr(mu.canvasXYReversal, "event_count", 0))
-        if xr_fail > 0:
-            v["xr"] = (False, f"{xr_fail} reversal pair(s) exceeding the limit")
-        else:
-            v["xr"] = (True, "no reversal pair exceeding the limit "
-                       f"({xr_n} detected)")
-        return v
+    def _collect_verdicts(mu, selected) -> dict:
+        """Publish passes only for selected checks with evaluated data."""
+        verdicts = {}
+        if selected["sust"]:
+            canvas = mu.canvasASTMSust
+            failed = sorted(canvas.sust_failed_rules)
+            if failed:
+                verdicts["sust"] = (False, "Exceeded limit: " + ", ".join(failed))
+            elif len(getattr(canvas, "sust_axes_checked", ())) == 6:
+                verdicts["sust"] = (True, "All measured axes within limit")
+        if selected["egg"]:
+            canvas = mu.canvasASTMEgg
+            failed = sorted(canvas.failed_rules)
+            if failed:
+                verdicts["egg"] = (False, "Outside boundary: " + ", ".join(failed))
+            elif getattr(canvas, "egg_planes_checked", set()) == {"xy", "xz", "yz"}:
+                verdicts["egg"] = (True, "All three measured planes within boundary")
+        if selected["gb"]:
+            canvas = mu.canvasGB
+            failed = sorted(canvas.failed_rules)
+            if failed:
+                verdicts["gb"] = (False, "Exceeded: " + ", ".join(failed))
+            elif len(getattr(canvas, "comb_rules_checked", ())) == 3:
+                verdicts["gb"] = (True, "All measured points within the three reference loops")
+        if selected["acczone"]:
+            zone = mu.canvasAccZone._auto_zone_result
+            if zone is not None:
+                verdicts["acczone"] = ("info", f"Classified as Zone {zone}")
+        if selected["zr"]:
+            canvas = mu.canvasZReversal
+            if canvas._analysis_active and "z" in canvas._cached_data:
+                count = canvas.event_count
+                verdicts["zr"] = (count == 0, f"Z reversal patterns detected: {count}")
+        if selected["xr"]:
+            canvas = mu.canvasXYReversal
+            if (canvas._analysis_active and {"x", "y"} <= canvas._cached_data.keys()
+                    and {"x", "y"} <= (canvas._allowance or {}).keys()):
+                failed = canvas.fail_count
+                verdicts["xr"] = (failed == 0, f"Reversal pairs exceeding allowance: "
+                                  f"{failed} of {canvas.event_count}")
+        return verdicts
 
     @staticmethod
     def _restore_analyze(mu, prior: dict) -> None:
@@ -1439,154 +1399,3 @@ class ReportDialog(_ThemedDialog):
                 btn.blockSignals(True)
                 btn.setChecked(on)
                 btn.blockSignals(False)
-
-    @staticmethod
-    def _add_image_with_verdict(doc, img_path: str, verdict) -> None:
-        """Add a chart image + a coloured status line beneath it.
-
-        ``verdict`` formats:
-          • ``(passed_bool, message_str)`` — PASS → green ✓, FAIL → red ✗
-          • ``("info", message_str)``       — informational neutral blue ●,
-            no pass/fail (used by AccZone, which is a classification not a check)
-          • None                           — no line (e.g. the Trend plot)
-
-        截图文件缺失（单图保存失败）时只跳过图片、保留结论行：既不抛错中断
-        整份报告，也不会误嵌任何残留的旧图（临时目录按次新建，天然隔离）。
-        """
-        if os.path.isfile(img_path):
-            doc.add_picture(img_path, width=Inches(6))
-        if verdict is None:
-            return
-        kind, msg = verdict
-        para = doc.add_paragraph()
-        if kind == "info":
-            run = para.add_run(f"\u25cf {msg}")
-            run.bold = True
-            run.font.color.rgb = RGBColor(0x00, 0x78, 0xD4)   # accent blue
-            return
-        passed = bool(kind)
-        mark = "\u2713 PASS" if passed else "\u2717 FAIL"
-        run = para.add_run(f"{mark} — {msg}")
-        run.bold = True
-        # Green for pass (#107C10), red for fail (#C00000) — readable when
-        # printed and on screen.
-        run.font.color.rgb = RGBColor(0x10, 0x7C, 0x10) if passed \
-            else RGBColor(0xC0, 0x00, 0x00)
-
-    @staticmethod
-    def _write_doc_section(doc, data, name: str, verdicts: dict,
-                           img_dir: str, mods: dict | None = None,
-                           sections: dict | None = None) -> None:
-        """Write one data section into the Word document.
-
-        Each module gets a level-4 heading; its subplots (from *sections*,
-        built by the capture step as ``{module: [(sub_label, filename)]}``)
-        each get a level-5 sub-heading + image. The module's single verdict
-        line (green ✓ PASS / red ✗ FAIL, from *verdicts*) is written once
-        after the module's images. *sections*=None falls back to one whole-
-        module image per module using the legacy img1..img7 slot names.
-        *mods* 为勾选的报告模块（None → 全部写入）；未勾选的模块整节跳过。
-        """
-        v = verdicts or {}
-        on = (lambda k: True) if mods is None \
-            else (lambda k: mods.get(k, True))
-
-        if sections is None:
-            # Legacy fallback: one whole-module image per module.
-            sections = {
-                "trend": [(None, "img5.jpg", None)],
-                "sust": [(None, "img1.jpg", None)],
-                "egg": [(None, "img2.jpg", None)],
-                "gb": [(None, "img3.jpg", None)],
-                "acczone": [(None, "img4.jpg", None)],
-                "zr": [(None, "img6.jpg", None)],
-                "xr": [(None, "img7.jpg", None)],
-            }
-
-        def _legend_line(cell, legend) -> None:
-            """图例文字行：彩色 ■ + 系列名（小号灰字）。"""
-            if not legend:
-                return
-            p = cell.add_paragraph()
-            for col, series_name in legend:
-                r1 = p.add_run("\u25a0 ")
-                r1.font.color.rgb = RGBColor.from_string(col.lstrip("#").upper())
-                r1.font.size = Pt(8)
-                r2 = p.add_run(series_name + "   ")
-                r2.font.size = Pt(8)
-
-        def _subplot_grid(entries) -> None:
-            """子图两列并排放进无边框表格：单元格 = 小标题 + ~2.9in 图 +
-            彩色文字图例。图是按报告画幅重新布局渲染的正常构图图。"""
-            if not entries:
-                return
-            rows = (len(entries) + 1) // 2
-            table = doc.add_table(rows=rows, cols=2)
-            for idx, (label, fname, legend) in enumerate(entries):
-                cell = table.cell(idx // 2, idx % 2)
-                p = cell.paragraphs[0]
-                if label:
-                    run = p.add_run(label)
-                    run.bold = True
-                    run.font.size = Pt(9)
-                img_p = cell.add_paragraph()
-                try:
-                    img_p.add_run().add_picture(
-                        os.path.join(img_dir, fname), width=Inches(2.9))
-                except Exception as e:
-                    print(f"Image insert error: {e}")
-                _legend_line(cell, legend)
-
-        def _write_module(key: str, heading: str) -> None:
-            if not on(key):
-                return
-            doc.add_heading(heading, level=4)
-            entries = sections.get(key, [])
-            if entries and all(label is None for label, _, _ in entries):
-                # 单图模块：整幅全宽。
-                for _sub, fname, legend in entries:
-                    ReportDialog._add_image_with_verdict(
-                        doc, os.path.join(img_dir, fname), None)
-                    if legend:
-                        para = doc.add_paragraph()
-                        for col, series_name in legend:
-                            r1 = para.add_run("\u25a0 ")
-                            r1.font.color.rgb = RGBColor.from_string(
-                                col.lstrip("#").upper())
-                            r1.font.size = Pt(8)
-                            r2 = para.add_run(series_name + "   ")
-                            r2.font.size = Pt(8)
-            else:
-                _subplot_grid(entries)
-            # 模块级判定行只写一次（空路径 → 跳过图片、只写结论）。
-            ReportDialog._add_image_with_verdict(doc, "", v.get(key))
-
-        doc.add_heading(f"Acceleration File Name: {name}", level=2)
-        if on("trend"):
-            doc.add_heading("Trend Plot:", level=4)
-            for _sub, fname, _leg in sections.get("trend", []):
-                # Trend has no analysis → no verdict line.
-                ReportDialog._add_image_with_verdict(
-                    doc, os.path.join(img_dir, fname), None)
-
-            # Stats table
-            key_info = data.get_data_stats(data.std_data)
-            table = doc.add_table(rows=1, cols=6, style="Table Grid")
-            table.autofit = True
-            hdr = table.rows[0].cells
-            hdr[0].text = ""
-            for j, col_name in enumerate(key_info.columns):
-                hdr[j + 1].text = col_name
-
-            for i in range(key_info.shape[0]):
-                row = table.add_row().cells
-                row[0].text = str(key_info.index[i])
-                for j in range(key_info.shape[1]):
-                    row[j + 1].text = str(key_info.iloc[i, j])
-
-        _write_module("sust", "ASTM F2291 Sustained Acceleration:")
-        _write_module("egg", "ASTM F2291 Eggplot:")
-        _write_module("gb", "GB 8408 Fitting:")
-        _write_module("acczone", "Acceleration Zone Plot:")
-        _write_module("zr", "Z-Axis Reversal Analysis:")
-        _write_module("xr", "X/Y-Axis Reversal Analysis:")

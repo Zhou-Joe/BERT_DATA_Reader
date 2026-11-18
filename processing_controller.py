@@ -80,16 +80,21 @@ class ProcessingController:
 
     def _set_processing_state(self, state, message):
         self._processing_state = state
-        title = {'empty': 'Acceleration workspace', 'stale': 'Charts outdated',
-                 'working': 'Updating charts...', 'ready': 'Charts up to date',
+        title = {'empty': 'No recordings', 'stale': 'Charts outdated',
+                 'working': 'Updating charts…', 'ready': 'Charts up to date',
                  'cancelled': 'Update cancelled', 'error': 'Update failed',
-                 'importing': 'Importing recording...'}[state]
+                 'importing': 'Importing…'}[state]
         tk = theme_manager.tokens
-        color = tk['danger'] if state == 'error' else (
-            tk['warning'] if state in ('stale', 'cancelled') else tk['text'])
+        fg, bg = {
+            'error': ('danger', 'danger_bg'), 'ready': ('success', 'success_bg'),
+            'stale': ('warning', 'warning_bg'), 'cancelled': ('warning', 'warning_bg'),
+            'empty': ('text_secondary', 'window_bg'),
+        }.get(state, ('pill_text', 'pill_bg'))
         self._workspace_title.setText(title)
         self._workspace_title.setToolTip(message)
-        self._workspace_title.setStyleSheet(f'color: {color}; font-size: 12pt; font-weight: 600;')
+        self._workspace_title.setStyleSheet(
+            f'color: {tk[fg]}; background: {tk[bg]}; padding: 3px 9px;'
+            'border-radius: 8px; font-size: 9pt; font-weight: 600;')
 
     def _show_pending_page(self, page, message):
         page._pending_label.setText(message)
@@ -313,9 +318,8 @@ class ProcessingController:
         self._cancel_job.setVisible(busy)
         self.annot_label.setVisible(not busy)
         self.status_label.setVisible(not busy)
-        for action in getattr(self, '_import_actions', []):
-            action.setEnabled(not importing)
-        self.sidebar._import_button.setEnabled(not importing)
+        for button in self._import_buttons:
+            button.setEnabled(not importing)
 
     def cancel_processing(self):
         commit, self._import_commit = self._import_commit, None

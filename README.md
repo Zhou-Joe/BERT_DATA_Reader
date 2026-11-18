@@ -38,10 +38,11 @@ export and a Word failure report.
   rate; sustained windows use seconds at the detected acquisition rate.
 - **Fractional trimming** — negative/pre-trigger and sub-second timestamps are
   supported, with an exclusive end time.
-- **Compact workspace** — two-row command bar, scrollable analysis settings,
-  a searchable recording library, and readable light/dark chart styling.
-- **One-click batch export** — writes every loaded dataset back to `.sup`.
-- **Word failure report** — snapshot of all charts + a pass/fail verdict table.
+- **Signal Lab workspace** — grouped analysis views, three labelled signal
+  channels and a searchable recording library with a selected-signal inspector.
+- **Batch export** — writes every loaded dataset back to `.sup`.
+- **Word analysis report** — recording settings, results, axis statistics and
+  numbered figures for the views you choose.
 - **Light / Dark theme** with theme-aware icons.
 
 ---
@@ -131,8 +132,10 @@ python gen_icon.py     # writes icon.ico + icon_preview.png from icon.svg
 
 | Action           | Accepts                                                |
 |------------------|--------------------------------------------------------|
-| **Add Accel Data** | `.sup` (SARC tab-separated, the native format)       |
-| **Add Raw Data**   | `.csv` / `.txt` from a DAQ export (multi-channel)    |
+| **Import → Acceleration recording / SUP** | `.sup` (SARC tab-separated, the native format) |
+| **Import → Raw DAQ recording** | `.csv` / `.txt` from a DAQ export (multi-channel) |
+| **Import → SensorConnect CSV** | SensorConnect accelerometer CSV with timestamps |
+| **Import → Legacy SensorConnect SUP (512 Hz)** | Older SUP exports known to originate at 512 Hz |
 
 > The CSV reader auto-detects the header length and maps channels by label
 > (`ASTM_X/Y/Z`, `GB_X/Y/Z`) — it no longer hardcodes a 23-row skip. GB / ASTM
@@ -141,7 +144,7 @@ python gen_icon.py     # writes icon.ico + icon_preview.png from icon.svg
 Multiple datasets can be loaded; each gets an auto-assigned palette colour and
 a selectable row in the searchable right-hand recording library.
 
-Both **Add Raw Data** and **Add Accel Data** accept multiple files in one dialog.
+The DAQ and acceleration recording importers accept multiple files in one dialog.
 Use Ctrl-click or Shift-click to select files, then Open. Each raw file adds
 its GB and ASTM recordings; each `.sup` file adds one recording. Import shows
 batch progress and a completion summary. Unreadable files are skipped with
@@ -149,13 +152,16 @@ per-file errors while the remaining files continue. Duplicate filenames get
 unique display names. Cancel keeps any files already added and skips those
 still pending.
 
-### 2. Configure the analysis (left control panel, below the tab list)
+### 2. Configure the analysis
+
+Open **Analysis settings** at the foot of the navigation rail. **Analysis views**
+returns to the chart list without resetting the parameters or selected recording.
 
 - **Restraint Type** — affects the limit overlays (None / Convenience / …).
 - **Condition** — test condition class.
 - **Height** (in) — scales the allowance limits (taller dummies → more allowance).
 - **Prone** — toggles the prone-posture egg shapes + sustained ax− override.
-- **Analyze** — one global on/off that runs on every chart tab.
+- **Analyze** (command bar) — one global on/off that runs on every chart tab.
 
 ### 3. Top control bar (always visible)
 
@@ -168,18 +174,33 @@ still pending.
 - **Progress / Cancel** — import and numerical work run in the background.
   Cancel stops applying unfinished work; use Update charts to retry.
 - **Cutoff** (Hz) — live low-pass filter cutoff (SpinBox, no modal dialog).
-- **Export All** — writes every loaded dataset to `.sup` in a chosen folder.
+- **More → Export all** — writes every loaded dataset to `.sup` in a chosen folder.
 
 ### 4. Per-chart interaction
 
 - **Zoom / Pan / Reset View** toolbars on each chart.
+- **Trend → Signal tools** — align peaks, change annotation mode, or reveal the manual time-shift controls.
 - **Click a data point** on the Acc Zone chart to read its time + acceleration.
 - **Recording library** — search imported files, click a row to select it, and
-  toggle visibility using the eye. Each row's menu offers trimming, orientation,
+  toggle visibility using the eye. Click the coloured square beside a recording
+  to choose its trace colour across all charts and Word reports. Negative
+  sustained curves use a dashed line. Each row's menu offers trimming, orientation,
   axis edits, colour selection, export and removal. The selected signal's
   statistics appear in a separate inspector; drag the divider to resize it.
-- **Generate Word report** — snapshots every chart + a pass/fail verdict table
-  into a `.docx`.
+- **Library** — hide the recordings panel for a wider chart. Press **Ctrl+F**
+  to reopen it and search without changing the active recording.
+- **Trim / split** — select a recording and open the inspector action. Choose
+  **Auto-detect** to see suggested windows over the acceleration trace.
+  Shading marks the time ranges to keep. Adjust the start or exclusive end,
+  or uncheck a segment to omit it. A longer **Quiet gap** treats longer pauses
+  as part of the same test. Detected segments are copies; the original stays
+  in the library unless you select **Remove original after creating segments**.
+  A single manual window uses **Trim original** instead.
+- **Word report** — choose recordings and analysis views. Each recording's
+  section opens with its settings and results, followed by the selected charts
+  with numbered captions. The trend option also includes axis statistics.
+  The ASTM sustained lateral acceleration figure overlays rightward (+ay) and
+  leftward (−ay) measurements with the upper and lower limits on one signed axis.
 
 ### 5. File dialog defaults
 
@@ -212,6 +233,8 @@ BERT_READER/
 ├── chart_utils.py          # series helpers
 ├── sidebar.py              # recording library and selected-signal inspector
 ├── dialogs.py              # TruncateTimeDialog, ReportDialog, CutoffFrequencyDialog
+├── segment_preview.py      # trim timeline and sample-accurate time controls
+├── report_document.py      # Word layout, results tables and figure captions
 ├── theme.py                # token system, app palette/QSS, theme switching
 ├── nav_icons.py            # custom SVG nav-tab icons
 ├── boundary_analysis.py    # boundary-violation helpers

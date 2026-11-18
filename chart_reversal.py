@@ -98,6 +98,7 @@ class _ReversalSubChart(PanChartView):
         # Anchored labels that must follow their data-coordinate anchor on
         # zoom/pan. Each entry: (QLabel, QPointF anchor, dx, dy).
         self._analysis_labels: list[tuple] = []
+        self._chart.plotAreaChanged.connect(self._reposition_analysis_labels)
         self._axis_x.rangeChanged.connect(self._reposition_analysis_labels)
         self._axis_y.rangeChanged.connect(self._reposition_analysis_labels)
 
@@ -596,14 +597,23 @@ class _ReversalSubChart(PanChartView):
         lbl = QLabel(text, self)
         lbl.setStyleSheet(chart_tooltip_style())
         lbl.adjustSize()
+        self._analysis_refs.append(lbl)
+        self._analysis_labels.append((lbl, anchor, dx, dy))
+        self._position_analysis_label(lbl, anchor, dx, dy)
+
+    def _position_analysis_label(self, lbl, anchor, dx, dy) -> None:
+        # A threshold outside the displayed axis range must not leave a label
+        # at the frame edge. This also matters when exporting hidden views.
+        if not (self._axis_x.min() <= anchor.x() <= self._axis_x.max()
+                and self._axis_y.min() <= anchor.y() <= self._axis_y.max()):
+            lbl.hide()
+            return
         pos = self._chart.mapToPosition(anchor)
-        lx = min(int(pos.x()) + dx, max(self.width() - lbl.width() - 4, 2))
-        ly = max(int(pos.y()) + dy, 2)
+        lx = max(2, min(int(pos.x()) + dx, self.width() - lbl.width() - 4))
+        ly = max(2, min(int(pos.y()) + dy, self.height() - lbl.height() - 4))
         lbl.move(lx, ly)
         lbl.show()
         lbl.raise_()
-        self._analysis_refs.append(lbl)
-        self._analysis_labels.append((lbl, anchor, dx, dy))
 
     def _reposition_analysis_labels(self, *args) -> None:
         """Re-clamp every reversal label to its data-coordinate anchor.
@@ -616,14 +626,9 @@ class _ReversalSubChart(PanChartView):
             if lbl is None:
                 continue
             try:
-                pos = self._chart.mapToPosition(anchor)
-            except Exception:
+                self._position_analysis_label(lbl, anchor, dx, dy)
+            except RuntimeError:
                 continue
-            lx = min(int(pos.x()) + dx,
-                     max(self.width() - lbl.width() - 4, 2))
-            ly = max(int(pos.y()) + dy, 2)
-            lbl.move(lx, ly)
-            lbl.raise_()
 
     # ------------------------------------------------------------------
     # Pan linkage — bubble up to the parent container so it can mirror this
@@ -853,6 +858,13 @@ class _ReversalContainerBase(QWidget):
         # re-plot (the shared Analyze button stays pressed — don't drop them).
         if prev_active:
             self.toggle_analysis(True)
+
+    def recolor_measured(self, color: str) -> None:
+        """Apply a recording colour without recomputing reversals or axes."""
+        for series in self._data_series.values():
+            pen = series.pen()
+            pen.setColor(QColor(color))
+            series.setPen(pen)
 
     def toggle_analysis(self, active: bool) -> None:
         """Show or hide reversal overlays on every sub-chart."""

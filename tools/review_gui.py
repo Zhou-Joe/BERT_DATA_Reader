@@ -36,6 +36,13 @@ def main():
     window.stackedWidget.setAnimationEnabled(False)
     window.show()
     app.processEvents()
+    window.resize(1366, 768)
+    for mode in ('light', 'dark'):
+        theme_manager.set_mode(mode)
+        app.processEvents()
+        window.grab().save(str(args.out / f'{mode}-welcome.png'))
+    theme_manager.set_mode('light')
+    window.resize(1600, 900)
     def wait_for_jobs(timeout=30000):
         loop = QEventLoop()
         poll = QTimer(loop)

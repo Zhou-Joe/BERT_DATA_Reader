@@ -697,240 +697,102 @@ def detect_test_boundaries(acc_data, quiet_thresh: float = 0.10,
                            min_test_s: float = 3.0, max_lead_s: float = 15.0,
                            min_active_frac: float = 0.25,
                            quiet_stub_s: float = 60.0):
-    """Detect sub-test boundaries in a (possibly concatenated) recording.
+    """Return proposed test windows as half-open source timestamps [start, end).
 
-    A single imported file may hold several measured rides back-to-back,
-    separated by quiet "stop" periods where the accelerometer reads only
-    gravity (X≈0, Y≈0, Z≈1g). This finds those stops and returns the tests.
+    A sustained stop separates rides; a logger time gap separates acquisitions.
+    Qualify motion before adding quiet lead-in/out, so padding cannot create a
+    test or disqualify a short one. Between rides share the stop at its clock
+    midpoint, retaining at most max_lead_s of quiet on either end.
 
-    Split rule (data-driven, no fixed lead time):
-      * The boundary BETWEEN two tests is the MIDPOINT of the long quiet run
-        separating them — so each side gets half the stop as a static lead-in
-        (the previous lap's tail-quiet + the next lap's head-quiet meet there).
-      * The FIRST lap starts at the file start (sample 0). If a long quiet
-        pre-roll precedes it, the lead-in is naturally the part of that run
-        up to the motion onset, capped at ``max_lead_s``.
-      * The LAST lap runs to the file end; a long trailing quiet run is capped
-        at ``max_lead_s`` of lead-in before it ends.
-      * Any static lead-in derived this way is capped at ``max_lead_s`` so a
-        very long stop doesn't pad a segment with tens of seconds of dead air.
-
-    Algorithm (validated on real GB/ASTM files):
-      1. motion = sqrt(x² + y² + (z−1)²)            — deviation from rest
-      2. rolling-mean smooth over ``win_s`` seconds — kills sample noise
-      3. is_quiet = smoothed < quiet_thresh
-      4. contiguous quiet runs >= min_gap_s are the inter-test stops
-         (intra-test pauses are short — a few seconds — while real test
-         separators are tens of seconds, so a duration filter is the robust
-         discriminator and makes the exact threshold non-critical).
-      5. split points = the midpoint of each long quiet run; tests are the
-         spans between consecutive split points (file start → split → … → end).
-      6. drop short QUIET fragments — a candidate that is both shorter than
-         ``min_test_s`` AND mostly below ``quiet_thresh`` (active fraction <
-         ``min_active_frac``) is dead air carved out by the split, not a test.
-         A short-but-genuinely-active test is kept.
-      7. return each test's [start_s, end_s) in source timestamps.
-
-    Parameters
-    ----------
-    acc_data : AccData
-        The loaded dataset (reads ``.data`` columns + ``.fs``).
-    quiet_thresh : float
-        Motion (g) below which a sample counts as "quiet". 0.10 separates
-        idle from active on measured GB/ASTM data.
-    win_s : float
-        Rolling-mean window in seconds. 0.5 smooths sample noise without
-        erasing real short stops.
-    min_gap_s : float
-        A quiet run must last at least this long to count as a test boundary.
-        10s cleanly separates real separators (≥30s) from intra-test pauses
-        (≤3s) — there is ~10× separation between the two clusters.
-    min_test_s : float
-        Tests shorter than this (after capping) are dropped (noise blips).
-    max_lead_s : float
-        Cap on how much static lead-in a test may carry at either end. A
-        long stop split at its midpoint already balances both sides, but the
-        first lap's head and last lap's tail (which touch the file edges)
-        and any asymmetric midpoint can otherwise pad a segment with a very
-        long quiet run. 15s keeps each lead-in ample for calibration without
-        wasting data.
-    min_active_frac : float
-        Fraction of a candidate segment's samples that must exceed
-        ``quiet_thresh`` (i.e. be genuinely moving) for it to count as a real
-        test. Used together with ``min_test_s`` to DROP short quiet fragments:
-        a region is dropped only if it is BOTH shorter than ``min_test_s``
-        AND has an active fraction below this. This protects brief-but-real
-        tests (a 6s ride is ~60% active) while removing the short dead-air
-        slivers that gap-splitting can carve out. 0.15 is well below any real
-        test (~0.5–0.7) and well above pure quiet (~0).
-
-    Returns
-    -------
-    list[tuple[float, float]]
-        One (start_seconds, end_seconds) pair per detected test. Empty list
-        if the recording is too short to contain a test. Times are taken
-        directly from the ``Time`` column (may be negative). End is exclusive.
+    min_active_frac is the required fraction of moving readings in a core.
+    The denominator is at least min_test_s (reject isolated impulses) and
+    at most quiet_stub_s (allow intermittent motion in long rides).
     """
     df = getattr(acc_data, "data", None)
     fs = getattr(acc_data, "fs", 500) or 500
-    if df is None or len(df) < 2:
+    if df is None or len(df) < 2 or df.shape[1] < 4:
         return []
-
-    # Columns: iloc[:,0]=Time, iloc[:,1]=X, iloc[:,2]=Y, iloc[:,3]=Z.
-    try:
-        t = pd.to_numeric(df.iloc[:, 0], errors="coerce").values
-        x = pd.to_numeric(df.iloc[:, 1], errors="coerce").values
-        y = pd.to_numeric(df.iloc[:, 2], errors="coerce").values
-        z = pd.to_numeric(df.iloc[:, 3], errors="coerce").values
-    except Exception:
+    samples = df.iloc[:, :4].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+    samples = samples[np.isfinite(samples).all(axis=1)]
+    if len(samples) < 2:
         return []
-    # Drop any leading/trailing non-numeric rows defensively.
-    mask = ~(np.isnan(t) | np.isnan(x) | np.isnan(y) | np.isnan(z))
-    if not mask.all():
-        t, x, y, z = t[mask], x[mask], y[mask], z[mask]
-    if len(t) < 2:
+    t, axes = samples[:, 0], samples[:, 1:]
+    dt = np.diff(t)
+    if np.any(dt <= 0):
+        # Overlapping source timestamps can't be represented by time windows.
         return []
+    win = max(1, round(win_s * fs))
+    # A gap contains no samples; never smooth across it, allocate padding in
+    # it, or count the missing wall time towards a test or a quiet run.
+    cuts = np.r_[0, np.flatnonzero(dt > min_gap_s) + 1, len(t)]
+    blocks = list(zip(cuts[:-1], cuts[1:]))
 
-    # 1-2. Motion magnitude + rolling-mean smoothing.
-    # Rest baseline is DATA-DRIVEN, not assumed (0,0,+1g): a sensor mounted
-    # in another orientation reads rest far from +1g on Z (SensorConnect
-    # example: rest ≈ (0.16, -0.02, -0.99)), and the fixed (z-1)² term then
-    # makes every idle sample look like ~2g of motion — no quiet gap is ever
-    # found and the whole file is returned as one test. Instead, take the
-    # FLATTEST win_s window of the recording (lowest summed per-axis rolling
-    # std) and use its per-axis mean as the rest vector; motion is deviation
-    # from that. Falls back to (0,0,1) only when the window computation
-    # degenerates.
-    win = max(1, int(round(win_s * fs)))
-    try:
-        std_sum = (pd.Series(x).rolling(win, center=True).std()
-                   + pd.Series(y).rolling(win, center=True).std()
-                   + pd.Series(z).rolling(win, center=True).std()).values
-        flat_i = int(np.nanargmin(std_sum))
-        # The rolling window is centered: use that same interval for its mean.
-        rest_start = max(0, flat_i - win // 2)
-        rest_end = rest_start + win
-        rx, ry, rz = (float(np.mean(x[rest_start:rest_end])),
-                      float(np.mean(y[rest_start:rest_end])),
-                      float(np.mean(z[rest_start:rest_end])))
-    except Exception:
-        rx, ry, rz = 0.0, 0.0, 1.0
-    motion = np.sqrt((x - rx) ** 2 + (y - ry) ** 2 + (z - rz) ** 2)
-    smoothed = (pd.Series(motion).rolling(win, center=True).mean()
-                .bfill().ffill().values)
+    # Prefer a stop-length stationary window for the rest vector. A brief
+    # flat acceleration plateau can look quieter than actual sensor noise.
+    # If no such window is quiet, fall back to the flattest short window.
+    # Sharing this reference lets a logger restart in the middle of a ride.
+    longest_block = max(end - start for start, end in blocks)
+    short_win = min(win, longest_block)
+    stop_win = max(short_win, round(min_gap_s * fs))
+    windows = [stop_win, short_win] if short_win < stop_win <= longest_block else [short_win]
+    for baseline_win in windows:
+        best_noise = np.inf
+        for start, end in blocks:
+            if end - start < baseline_win:
+                continue
+            block = axes[start:end]
+            noise = (pd.DataFrame(block).rolling(baseline_win).std(ddof=0)
+                     .to_numpy().sum(axis=1))
+            i = int(np.nanargmin(noise))
+            if noise[i] < best_noise:
+                best_noise = noise[i]
+                rest = block[i + 1 - baseline_win:i + 1].mean(axis=0)
+        if best_noise < quiet_thresh:
+            break
+    motion = np.linalg.norm(axes - rest, axis=1)
 
-    # 3-4. Contiguous quiet runs (CLOCK duration — a SensorConnect-style
-    # sensor logs at a nominal fs but its true sample spacing can differ a
-    # few percent, so sample-count durations would drift). Timestamp
-    # DISCONTINUITIES (dt > min_gap_s between consecutive samples — the
-    # sensor stopped/restarted logging) are boundaries too, and they split
-    # right at the jump: there is no shared quiet data to midpoint.
-    is_quiet = smoothed < quiet_thresh
-    edges = np.diff(np.concatenate([[0], is_quiet.astype(int), [0]]))
-    starts = np.where(edges == 1)[0]
-    ends = np.where(edges == -1)[0] - 1
-    long_gaps = [(int(s), int(e)) for s, e in zip(starts, ends)
-                 if (t[e] - t[s]) >= min_gap_s]
-
-    # 5-6. Build tests from the ACTIVE regions (the spans between long quiet
-    #      gaps). A long gap between two tests splits at its MIDPOINT so each
-    #      side gets half the stop as static lead-in/out; if that half exceeds
-    #      max_lead_s, cap each side's quiet to max_lead_s (don't pad with more
-    #      dead air). A leading gap (pre-roll) trims the first test's head to
-    #      max_lead_s of lead-in; a trailing gap (tail) trims the last test's
-    #      tail the same way. The first lap's head and last lap's tail fall
-    #      back to the file start / end when there is no gap to cap against.
-    max_lead = max(0, int(round(max_lead_s * fs)))
-    last = len(t) - 1
-
-    # For each long gap compute the capped prev-tail and next-head sample
-    # indices: prev_test ends at tail_end, next_test starts at head_start.
-    gap_cuts = []
-    for gs, ge in long_gaps:
-        midpoint = (gs + ge) // 2
-        half = (ge - gs) // 2
-        if half <= max_lead:
-            tail_end, head_start = midpoint, midpoint + 1
-        else:
-            tail_end, head_start = gs + max_lead, ge - max_lead + 1
-        gap_cuts.append((tail_end, head_start))
-    # Timestamp jumps (sensor stopped/restarted logging) also cut — right at
-    # the jump, nothing shared between the sides.
-    dts = np.diff(t)
-    for i in np.where(dts > min_gap_s)[0]:
-        gap_cuts.append((int(i), int(i) + 1))
-    # Sort by cut position and merge overlaps (a jump can sit inside a quiet
-    # gap's span).
-    gap_cuts.sort()
-    merged_cuts: list = []
-    for tail_end, head_start in gap_cuts:
-        if merged_cuts and tail_end < merged_cuts[-1][1]:
-            prev_tail, prev_head = merged_cuts[-1]
-            merged_cuts[-1] = (prev_tail, max(prev_head, head_start))
-        else:
-            merged_cuts.append((tail_end, head_start))
-
-    # Walk the gaps: each gap separates two tests. The test BEFORE a gap ends
-    # at the gap's tail_end; the test AFTER starts at the gap's head_start.
-    # The very first test starts at the file start (or, if a leading gap
-    # exists, max_lead into it); the last test runs to the file end.
-    regions = []
-    test_start = 0
-    # If the file opens with a long gap (pre-roll), the first test's head is
-    # capped to max_lead of lead-in past the gap start.
-    has_leading = long_gaps and long_gaps[0][0] <= max_lead
-    if has_leading:
-        first_head = long_gaps[0][1] - max_lead + 1
-        test_start = max(long_gaps[0][0], min(first_head, long_gaps[0][1]))
-    for (tail_end, head_start) in merged_cuts:
-        # Guard against a single gap that is BOTH leading and trailing (the
-        # whole file is one dead-air gap): skip a region whose end is at/before
-        # its start to avoid a negative-length or duplicate segment.
-        if tail_end > test_start and (t[tail_end] - t[test_start]) >= min_test_s:
-            regions.append((test_start, tail_end))
-        test_start = max(test_start, head_start)
-    # If the file ends with a long gap (tail), cap the last test's tail.
-    # Only treat it as a tail when it's a DIFFERENT gap from the leading one
-    # (a single gap can't be both the head cap and the tail cap sensibly).
-    has_trailing = (long_gaps
-                    and long_gaps[-1][1] >= last - max_lead
-                    and (not has_leading or long_gaps[0] is not long_gaps[-1]))
-    if has_trailing:
-        last_end = long_gaps[-1][0] + max_lead
-        last_end = min(last_end, last)
-    else:
-        last_end = last
-    if last_end > test_start and (t[last_end] - t[test_start]) >= min_test_s:
-        regions.append((test_start, last_end))
-
-    # 7. Drop short QUIET fragments. A candidate that is BOTH shorter than
-    #    min_test_s AND mostly quiet (active fraction < min_active_frac) is
-    #    dead air that the midpoint split carved out, not a real test. A short
-    #    but genuinely moving segment (a brief ride) is kept — its active
-    #    fraction is high, so it survives this filter.
-    #    A SECOND band drops longer pure-quiet stubs (< quiet_stub_s, active
-    #    fraction below the same threshold): the 5–40s lead-in/tail remnants
-    #    the max_lead cap and jump cuts carve out around real rides. Real
-    #    rides run tens of seconds to minutes at ≥0.5 active, so 60s/0.15
-    #    separates them by a wide margin (SensorConnect 参考数据实测).
-    def _is_dead_air(s, e):
-        dur = t[e] - t[s]
-        if dur >= quiet_stub_s:
-            return False                     # long enough — keep regardless
-        active_frac = float(np.mean(smoothed[s:e + 1] >= quiet_thresh))
-        return active_frac < min_active_frac
-
-    regions = [(s, e) for s, e in regions if not _is_dead_air(s, e)]
-
-    # 8. Sample indices -> timestamps, with an exclusive right edge. The
-    #    "next sample" must be CONTIGUOUS: with timestamp jumps in the file,
-    #    t[e+1] can leap minutes forward (sensor stopped logging) — then the
-    #    region end would teleport onto the wrong side of the jump.
     out = []
-    for s, e in regions:
-        if e + 1 < len(t) and (t[e + 1] - t[e]) <= 2.0 / fs:
-            end = float(t[e + 1])
-        else:
-            end = float(t[e]) + 1.0 / fs
-        out.append((float(t[s]), end))
+    for start, end in blocks:
+        # Include the nominal exclusive end of the last acquired sample.
+        edges = np.r_[t[start:end], t[end - 1] + 1 / fs]
+        raw = motion[start:end]
+        smoothed = (pd.Series(raw).rolling(win, center=True, min_periods=1)
+                    .mean().to_numpy())
+        moving = smoothed >= quiet_thresh
+        # Require actual moving samples: a single large spike can otherwise
+        # make an entire smoothing window look active.
+        evidence = moving & (raw >= quiet_thresh)
+        transitions = np.diff(np.r_[False, ~moving, False].astype(int))
+        quiet_runs = zip(np.flatnonzero(transitions == 1),
+                         np.flatnonzero(transitions == -1))
+
+        # Each long stop ends a core and starts the next. If a stop touches a
+        # file/block edge, there is no candidate on that side of the stop.
+        core_start = padded_start = 0
+
+        def add_core(core_end, padded_end):
+            if padded_end - padded_start < 2:
+                return  # Not enough acquired samples to trim or analyze.
+            active = np.flatnonzero(evidence[core_start:core_end])
+            if active.size == 0:
+                return
+            span = (active[-1] - active[0] + 1) / fs
+            required = min_active_frac * max(min_test_s, min(span, quiet_stub_s))
+            if active.size / fs >= required:
+                out.append((float(edges[padded_start]), float(edges[padded_end])))
+
+        for gs, ge in quiet_runs:
+            stop_start, stop_end = edges[gs], edges[ge]
+            if stop_end - stop_start < min_gap_s - 1e-9:
+                continue
+            midpoint = (stop_start + stop_end) / 2
+            # At the file edges the single neighboring ride gets the full
+            # allowed lead. Otherwise adjacent windows meet at one boundary.
+            tail = min(stop_start + max(0, max_lead_s),
+                       stop_end if ge == len(raw) else midpoint)
+            head = max(stop_end - max(0, max_lead_s),
+                       stop_start if gs == 0 else midpoint)
+            add_core(gs, np.searchsorted(edges, tail))
+            core_start, padded_start = ge, np.searchsorted(edges, head)
+        add_core(len(raw), len(raw))
     return out

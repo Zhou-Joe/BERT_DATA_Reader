@@ -54,9 +54,9 @@ DATASET_COLORS = [
 ]
 
 # Backwards-compatible aliases (a few modules import these names)
-PRIMARY = "#0078D4"
-PRIMARY_HOVER = "#106EBE"
-PRIMARY_PRESSED = "#005A9E"
+PRIMARY = "#146C59"
+PRIMARY_HOVER = "#105A4A"
+PRIMARY_PRESSED = "#0C4539"
 DANGER = "#C42B1C"
 SUCCESS = "#107C10"
 WARNING = "#F7630C"
@@ -76,11 +76,7 @@ LINE_WIDTH_DEFAULT = 1.3
 # clearly against the reference grid and overlapping rides.
 LINE_WIDTH_FITTING = 2.0
 
-# Measured-trace sign colours, shared by the GB and ASTM fitting charts so the
-# +/− measured curves read consistently across both. These OVERRIDE the
-# dataset's own colour for the measured (±) series — i.e. regardless of which
-# dataset you plot, measured (+) is always bright blue, measured (−) bright
-# green. Bright (not dark) so the traces stand out against the reference grid.
+# Defaults for GB/ASTM callers that don't supply a recording colour.
 MEASURED_POS_COLOR = "#1E90FF"   # bright blue (dodger blue) — positive traces
 MEASURED_NEG_COLOR = "#32CD32"   # bright green (lime green) — negative traces
 
@@ -149,10 +145,8 @@ def _build_tokens(dark: bool) -> dict:
     accent_pressed = _darken(accent, 0.76) if not dark else _lighten(accent, 0.32)
     accent_disabled = _lighten(accent, 0.55) if not dark else _darken(accent, 0.5)
 
-    succ_fg_pair = _pair(_SC.SUCCESS_FOREGROUND)
     caut_fg_pair = _pair(_SC.CAUTION_FOREGROUND)
     crit_fg_pair = _pair(_SC.CRITICAL_FOREGROUND)
-    succ_bg_pair = _pair(_SC.SUCCESS_BACKGROUND)
     caut_bg_pair = _pair(_SC.CAUTION_BACKGROUND)
     crit_bg_pair = _pair(_SC.CRITICAL_BACKGROUND)
     idx = 1 if dark else 0
@@ -161,20 +155,20 @@ def _build_tokens(dark: bool) -> dict:
         tk = {
             "mode": "dark",
             # chrome
-            "window_bg": "#171D28",
-            "bg": "#171D28",
-            "surface": "#202938",
-            "surface_alt": "#292929",
-            "surface_hover": "#3A3A3A",
-            "surface_pressed": "#454545",
+            "window_bg": "#13201E",
+            "bg": "#13201E",
+            "surface": "#1B2A27",
+            "surface_alt": "#22342F",
+            "surface_hover": "#30463F",
+            "surface_pressed": "#3C524B",
             # text
-            "text": "#FFFFFF",
-            "text_secondary": "#C7C7C7",
+            "text": "#ECF2EB",
+            "text_secondary": "#ACC0B7",
             "text_disabled": "#6E6E6E",
-            "text_on_accent": "#FFFFFF",
+            "text_on_accent": "#10251D",
             # strokes
-            "card_stroke": "#3D3D3D",
-            "divider": "#3F3F3F",
+            "card_stroke": "#374B44",
+            "divider": "#33463F",
             "control_stroke": "#404040",
             "control_stroke_strong": "#5A5A5A",
             # accent ramp (live from themeColor)
@@ -182,22 +176,22 @@ def _build_tokens(dark: bool) -> dict:
             "accent_hover": accent_hover,
             "accent_pressed": accent_pressed,
             "accent_disabled": accent_disabled,
-            "accent_secondary": _darken(accent, 0.45),
-            "accent_secondary_hover": _darken(accent, 0.55),
+            "accent_secondary": "#21493E",
+            "accent_secondary_hover": "#2D584A",
             "subtle_fill": "#2D2D2D",
             "subtle_fill_hover": "#3A3A3A",
             # chart palette
-            "chart_bg": "#202938",
-            "chart_grid": "#344155",
-            "chart_axis": "#B0B0B0",
-            "chart_title": "#FFFFFF",
-            "chart_text": "#D8D8D8",
+            "chart_bg": "#1B2A27",
+            "chart_grid": "#30413C",
+            "chart_axis": "#9BB3A9",
+            "chart_title": "#ECF2EB",
+            "chart_text": "#BBCDC4",
             # status (from FluentSystemColor pairs)
             "danger": crit_fg_pair[idx],
             "danger_bg": crit_bg_pair[idx],
             "danger_rgb": _hex_to_rgb(crit_fg_pair[idx]),
-            "success": succ_fg_pair[idx],
-            "success_bg": succ_bg_pair[idx],
+            "success": "#ACDEC2",
+            "success_bg": "#244737",
             "warning": caut_fg_pair[idx],
             "warning_bg": caut_bg_pair[idx],
             # tooltip
@@ -227,18 +221,18 @@ def _build_tokens(dark: bool) -> dict:
     else:
         tk = {
             "mode": "light",
-            "window_bg": "#F3F6FB",
-            "bg": "#F3F6FB",
+            "window_bg": "#F0F2EA",
+            "bg": "#F0F2EA",
             "surface": "#FFFFFF",
-            "surface_alt": "#F5F5F5",
-            "surface_hover": "#EDEDED",
-            "surface_pressed": "#E5E5E5",
-            "text": "#1A1A1A",
-            "text_secondary": "#5B5B5B",
+            "surface_alt": "#F5F7F1",
+            "surface_hover": "#E8EEE6",
+            "surface_pressed": "#D8E4DB",
+            "text": "#182F28",
+            "text_secondary": "#52675D",
             "text_disabled": "#A0A0A0",
             "text_on_accent": "#FFFFFF",
-            "card_stroke": "#E5E5E5",
-            "divider": "#E4E4E4",
+            "card_stroke": "#D5DFD5",
+            "divider": "#D4DDD3",
             "control_stroke": "#C7C7C7",
             "control_stroke_strong": "#B0B0B0",
             "accent": accent,
@@ -250,15 +244,15 @@ def _build_tokens(dark: bool) -> dict:
             "subtle_fill": "#F9F9F9",
             "subtle_fill_hover": "#EFEFEF",
             "chart_bg": "#FFFFFF",
-            "chart_grid": "#E8EDF5",
-            "chart_axis": "#5B5B5B",
-            "chart_title": "#1A1A1A",
-            "chart_text": "#333333",
+            "chart_grid": "#E3EAE4",
+            "chart_axis": "#62766B",
+            "chart_title": "#182F28",
+            "chart_text": "#41574D",
             "danger": crit_fg_pair[idx],
             "danger_bg": crit_bg_pair[idx],
             "danger_rgb": _hex_to_rgb(crit_fg_pair[idx]),
-            "success": succ_fg_pair[idx],
-            "success_bg": succ_bg_pair[idx],
+            "success": "#225D41",
+            "success_bg": "#E3F1E3",
             "warning": caut_fg_pair[idx],
             "warning_bg": caut_bg_pair[idx],
             "tooltip_bg": "#F2F2F2",
@@ -515,15 +509,40 @@ def _app_qss(tk: dict) -> str:
     Applied globally via ``QApplication.setStyleSheet`` on every theme switch.
     """
     return (
-        f"QToolBar {{ background: transparent; border: none; spacing: 3px; padding: 4px; }}"
+        f"QWidget#workbench {{ background: {tk['window_bg']}; }}"
+        "QFrame#rail { background: #123A34; border: none; }"
+        "QLabel#brandName { color: #F3F7EC; font: bold 24px 'Segoe UI'; }"
+        "QLabel#brandTag, QLabel#railCaption { color: #ABC6B9; font: bold 11px 'Consolas'; }"
+        "QLabel#railCaption { padding: 15px 10px 5px; }"
+        "QLabel#navTitle { color: #E3EEE7; font: 14px 'Segoe UI'; }"
+        "QLabel#navIndex { color: #ACC5B7; font: 11px 'Consolas'; }"
+        "QToolButton#viewLink { color: #D8E8DE; text-align: left; padding: 3px 10px; font: 14px 'Segoe UI'; border-radius: 5px; }"
+        "QToolButton#viewLink:hover, QToolButton#railSettings:hover { background: #245047; }"
+        "QToolButton#viewLink:checked { color: #F5FFEA; background: #315D50; border-left: 3px solid #D7F28A; padding-left: 7px; font-weight: bold; }"
+        "QToolButton#railSettings { color: #DBECE0; background: #1C453D; border: 1px solid #507166; border-radius: 5px; }"
+        "QToolButton#viewLink:focus, QToolButton#railSettings:focus { border: 1px solid #D7F28A; }"
+        f"QToolBar {{ background: {tk['surface']}; border: 1px solid {tk['divider']}; border-radius: 6px; spacing: 2px; padding: 3px; }}"
         f"QWidget#topBar {{ background: {tk['surface']}; border-bottom: 1px solid {tk['divider']}; }}"
         f"QWidget#ctrlPanel, QScrollArea#analysisScroll {{ background: {tk['window_bg']}; border: none; }}"
         f"QLabel#pendingChart {{ color: {tk['text_secondary']}; background: {tk['chart_bg']}; font-size: 12pt; border-radius: 10px; padding: 20px; }}"
-        f"QLabel#workspaceTitle {{ font-size: 12pt; font-weight: 600; }}"
+        f"QLabel#workspaceTitle {{ color: {tk['text']}; font: bold 27px 'Segoe UI'; }}"
+        f"QLabel#caption, QLabel#formatKey {{ color: {tk['text_secondary']}; font: bold 11px 'Consolas'; }}"
+        f"QLabel#formatKey {{ border-top: 1px solid {tk['divider']}; padding-top: 12px; }}"
+        f"QFrame#channelPanel {{ background: {tk['chart_bg']}; border: 1px solid {tk['divider']}; border-radius: 6px; }}"
+        f"QLabel#channelCode {{ color: {tk['pill_text']}; background: {tk['pill_bg']}; border-radius: 3px; font: bold 11px 'Consolas'; padding: 1px 5px; }}"
+        f"QLabel#channelName {{ color: {tk['text']}; font: bold 13px 'Segoe UI'; }}"
         f"QLabel#sectionHeading {{ color: {tk['text_secondary']}; font-size: 8pt; font-weight: 600; padding: 8px 0; }}"
         f"QLabel#secondaryText {{ color: {tk['text_secondary']}; line-height: 1.5; }}"
-        f"QWidget#emptyState {{ background: {tk['surface']}; border-radius: 12px; }}"
-        f"QLabel#emptyTitle {{ font-size: 17pt; font-weight: 600; padding: 12px; }}"
+        f"QWidget#emptyState {{ background: {tk['surface']}; border: 1px solid {tk['divider']}; border-radius: 7px; }}"
+        f"QLabel#emptyEyebrow {{ color: {tk['pill_text']}; font-size: 9pt; font-weight: 700; }}"
+        f"QLabel#emptyTitle {{ font: bold 33px 'Segoe UI'; }}"
+        f"QToolButton#importButton, QToolButton#emptyImportButton {{"
+        f" color: {tk['pill_text']}; background: {tk['pill_bg']};"
+        f" border: 1px solid {tk['control_stroke']}; border-radius: 6px; padding: 6px 16px 6px 8px; }}"
+        f"QToolButton#importButton:hover, QToolButton#emptyImportButton:hover {{"
+        f" background: {tk['accent_secondary_hover']}; border-color: {tk['accent']}; }}"
+        "QToolButton#emptyImportButton { color: #173C31; background: #D7F28A; border-color: #B1D76E; font-weight: bold; padding: 8px 20px 8px 12px; }"
+        "QToolButton#emptyImportButton:hover { background: #C5E77A; }"
         f"QWidget#InfoCard {{ background: {tk['surface']}; border: 1px solid {tk['card_stroke']}; border-radius: 10px; }}"
         f"QToolButton, QToolBar QToolButton {{"
         f"  color: {tk['text']}; background: transparent; border: none;"
@@ -532,6 +551,8 @@ def _app_qss(tk: dict) -> str:
         f"QToolButton:hover, QToolBar QToolButton:hover {{"
         f"  background: {tk['surface_hover']};"
         f"}}"
+        f"QToolBar QToolButton {{ padding: 4px 6px; }}"
+        f"QToolButton:disabled {{ color: {tk['text_secondary']}; }}"
         f"QToolButton:checked, QToolBar QToolButton:checked {{"
         f"  background: {tk['accent_secondary']};"
         f"}}"
@@ -545,7 +566,7 @@ def _app_qss(tk: dict) -> str:
         f"}}"
         f"QLabel {{ color: {tk['text']}; }}"
         f"QStatusBar {{ color: {tk['text_secondary']};"
-        f"  background: {tk['window_bg']}; }}"
+        f"  background: {tk['surface_alt']}; border-top: 1px solid {tk['divider']}; padding: 2px 8px; }}"
         f"QStatusBar::item {{ border: none; }}"
         f"QToolTip {{ color: {tk['tooltip_text']};"
         f"  background: {tk['tooltip_bg']}; border: 1px solid {tk['tooltip_border']}; }}"

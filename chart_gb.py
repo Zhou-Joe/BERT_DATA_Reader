@@ -241,20 +241,15 @@ class GBChartView(QWidget):
     def addplotxyz(self, data, color: str | None = None, sustained=None) -> None:
         """Overlay measured data on the GB charts.
 
-        The measured (+) traces use the shared dark-blue, measured (−) the
-        shared dark-green (see MEASURED_POS_COLOR / MEASURED_NEG_COLOR in
-        theme), consistent with the ASTM charts. The ``color`` arg is ignored
-        for the ± traces so +/− read the same regardless of which dataset is
-        plotted; the combined scatter overlay still takes *color*.
+        Each measured curve uses the recording colour. Negative sustained
+        traces are dashed to distinguish the two directions.
         """
         # Remove previous measured data
         self._remove_data_series()
 
-        measured_pos = MEASURED_POS_COLOR
-        measured_neg = MEASURED_NEG_COLOR
-        # The combined scatter (3rd chart) uses the bright-blue measured colour
-        # so it reads consistently with the ± traces (per user request).
-        comb_color = MEASURED_POS_COLOR
+        measured_pos = color or MEASURED_POS_COLOR
+        measured_neg = color or MEASURED_NEG_COLOR
+        comb_color = color or MEASURED_POS_COLOR
 
         # Process GB data at various dt values
         d0py = max(0, data.iloc[:, 2].max())
@@ -350,7 +345,7 @@ class GBChartView(QWidget):
     def _add_data(self, chart, ax_x, ax_y, x_vals, y_vals,
                   name, color) -> QLineSeries:
         s = create_line_series(x_vals, y_vals, color=color, name=name,
-                                width=LINE_WIDTH_FITTING)
+                                width=LINE_WIDTH_FITTING, dash=name.endswith("(-)"))
         chart.addSeries(s)
         s.attachAxis(ax_x)
         s.attachAxis(ax_y)
@@ -366,21 +361,10 @@ class GBChartView(QWidget):
         self._data_series.clear()
 
     def recolor_measured(self, color: str) -> None:
-        """Recolour the measured traces by sign, using shared colours.
-
-        The (+) traces stay bright blue, (−) stay bright green (shared sign
-        colours), and the combined-chart scatter ("Measured Data") also uses
-        the bright blue — regardless of *color*, so all measured curves read
-        consistently across datasets.
-        """
+        """Apply the recording colour to its measured curves and legend."""
         for s in self._data_series:
-            name = (s.name() or "")
             pen = s.pen()
-            if name.endswith("(-)"):
-                pen.setColor(QColor(MEASURED_NEG_COLOR))
-            else:
-                # (+) traces AND the combined scatter → bright blue.
-                pen.setColor(QColor(MEASURED_POS_COLOR))
+            pen.setColor(QColor(color))
             s.setPen(pen)
         self._refresh_legends()
 
@@ -466,6 +450,7 @@ class GBChartView(QWidget):
         self._comb_analysis_active = active
         self._clear_comb_analysis()
         self.failed_rules: set[str] = set()
+        self.comb_rules_checked = set()
         if not active or self._last_comb_data is None:
             return
         data = self._last_comb_data
@@ -488,6 +473,7 @@ class GBChartView(QWidget):
                     verts.append((float(p.x()), float(p.y())))
             if len(verts) < 3:
                 continue
+            self.comb_rules_checked.add(rule_label)
             path = Path(verts)
             viols = find_boundary_violations(
                 measured_xy, t_arr, [path], threshold)

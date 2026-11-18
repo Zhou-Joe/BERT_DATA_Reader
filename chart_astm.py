@@ -46,7 +46,7 @@ class ASTMChartView(QWidget):
     # All available chart keys and their axis titles/ranges.
     _CONFIGS = {
         "ax": ("dt (s)", "ax",  (0, 14), (-3, 7)),
-        "ay": ("dt (s)", "ay",  (0, 14), (0, 3.2)),
+        "ay": ("dt (s)", "Lateral ay (g)", (0, 14), (-3.2, 3.2)),
         "az": ("dt (s)", "az",  (0, 14), (-3, 7)),
         "xy": ("Front <=> Back", "Left <=> Right", (-2.1, 6.1), (-3.2, 3.2)),
         "xz": ("Front <=> Back", "Up <=> Down",   (-2.1, 6.1), (-2.2, 6.2)),
@@ -209,9 +209,9 @@ class ASTMChartView(QWidget):
                    prone: bool = False, sustained=None) -> None:
         """Plot measured data and ASTM reference curves.
 
-        ``color`` (hex) drives the measured (+) traces and the egg overlays.
-        If None, falls back to legacy blue/cyan. The measured (−) traces use
-        a contrasting dark tone so + / − stay distinguishable.
+        ``color`` (hex) drives every measured curve. Negative sustained
+        traces are dashed so both directions remain distinguishable.
+        If None, use the default measured colours.
 
         ``prone`` (prone posture) swaps the XY/XZ base eggs to the wider prone
         duck-egg shape and overrides the sustained ax− limit (both the ASTM
@@ -219,15 +219,9 @@ class ASTMChartView(QWidget):
         """
         self._remove_data_series()
 
-        # Shared sign colours: measured (+) dark blue, measured (−) dark green,
-        # consistent with the GB charts (see MEASURED_POS/NEG_COLOR in theme).
-        # The dataset's own ``color`` is ignored for the ± traces so +/− read
-        # the same across datasets; the egg overlays keep the dataset colour.
-        measured_pos = MEASURED_POS_COLOR
-        measured_neg = MEASURED_NEG_COLOR
-        # Egg plots use the bright-blue measured colour so the overlay reads
-        # consistently with the ± traces (per user request).
-        egg_color = MEASURED_POS_COLOR
+        measured_pos = color or MEASURED_POS_COLOR
+        measured_neg = color or MEASURED_NEG_COLOR
+        egg_color = color or MEASURED_POS_COLOR
 
         # The split Eggplot canvas has no sustained charts. Avoid seventeen
         # rolling-window passes on data it never displays.
@@ -237,63 +231,17 @@ class ASTMChartView(QWidget):
                 if sustained is not None:
                     return sustained[duration]
                 return ProcessASTM(data, max(1, round(fs * duration)))
-            # Process data at various dt values
-            d0p, d0n = calculate(0.01)
-            d1p, d1n = calculate(0.02)
-            d2p, d2n = calculate(0.05)
-            d3p, d3n = calculate(0.1)
-            d7p, d7n = calculate(0.2)
-            d03p, d03n = calculate(0.3)
-            d04p, d04n = calculate(0.4)
-            d4p, d4n = calculate(0.5)
-            d5p, d5n = calculate(1)
-            d9p, d9n = calculate(2)
-            d6p, d6n = calculate(4)
-            d10p, d10n = calculate(5)
-            d77p, d77n = calculate(6)
-            d99p, d99n = calculate(7)
-            d88p, d88n = calculate(8)
-            d111p, d111n = calculate(9)
-            d8p, d8n = calculate(14)
-
-            x_axis = [0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5,
-                      1, 2, 4, 5, 6, 7, 8, 9, 14]
-
-            # ax chart
-            self._add_data_line("ax", x_axis,
-                [d0p[0], d1p[0], d2p[0], d3p[0], d7p[0], d03p[0], d04p[0],
-                 d4p[0], d5p[0], d9p[0], d6p[0], d10p[0], d77p[0], d99p[0],
-                 d88p[0], d111p[0], d8p[0]],
-                "Measured ax (+)", measured_pos)
-            self._add_data_line("ax", x_axis,
-                [d0n[0], d1n[0], d2n[0], d3n[0], d7n[0], d03n[0], d04n[0],
-                 d4n[0], d5n[0], d9n[0], d6n[0], d10n[0], d77n[0], d99n[0],
-                 d88n[0], d111n[0], d8n[0]],
-                "Measured ax (-)", measured_neg)
-
-            # ay chart
-            self._add_data_line("ay", x_axis,
-                [d0p[1], d1p[1], d2p[1], d3p[1], d7p[1], d03p[1], d04p[1],
-                 d4p[1], d5p[1], d9p[1], d6p[1], d10p[1], d77p[1], d99p[1],
-                 d88p[1], d111p[1], d8p[1]],
-                "Measured ay (Right)", measured_pos)
-            self._add_data_line("ay", x_axis,
-                [-d0n[1], -d1n[1], -d2n[1], -d3n[1], -d7n[1], -d03n[1],
-                 -d04n[1], -d4n[1], -d5n[1], -d9n[1], -d6n[1], -d10n[1],
-                 -d77n[1], -d99n[1], -d88n[1], -d111n[1], -d8n[1]],
-                "Measured ay (Left)", measured_neg)
-
-            # az chart
-            self._add_data_line("az", x_axis,
-                [d0p[2], d1p[2], d2p[2], d3p[2], d7p[2], d03p[2], d04p[2],
-                 d4p[2], d5p[2], d9p[2], d6p[2], d10p[2], d77p[2], d99p[2],
-                 d88p[2], d111p[2], d8p[2]],
-                "Measured az (Down)", measured_pos)
-            self._add_data_line("az", x_axis,
-                [d0n[2], d1n[2], d2n[2], d3n[2], d7n[2], d03n[2], d04n[2],
-                 d4n[2], d5n[2], d9n[2], d6n[2], d10n[2], d77n[2], d99n[2],
-                 d88n[2], d111n[2], d8n[2]],
-                "Measured az (Up)", measured_neg)
+            # ProcessASTM returns signed extrema. Both the background result
+            # and the synchronous report path go through this same mapping.
+            windows = [calculate(dt) for dt in self._SUST_DTS]
+            for column, (axis, pos_label, neg_label) in enumerate((
+                ("ax", "(+)", "(-)"), ("ay", "(+)", "(-)"), ("az", "(Down)", "(Up)"),
+            )):
+                for side, label, trace_color in ((0, pos_label, measured_pos),
+                                                  (1, neg_label, measured_neg)):
+                    values = [peaks[side][column] for peaks in windows]
+                    self._add_data_line(axis, self._SUST_DTS, values,
+                                        f"Measured {axis} {label}", trace_color)
 
         # Egg plots — measured data
         x_data = data.iloc[:, 1].values
@@ -309,6 +257,16 @@ class ASTMChartView(QWidget):
             self._add_reference_curves(restraint, cond, input_height, prone)
         except Exception as e:
             print(f"ASTM reference error: {e}")
+
+        if "ay" in self._charts:
+            # Keep excursions beyond either limit visible, including their
+            # failure markers. Reset View returns to the same signed scale.
+            peak = max((abs(p.y()) for s in self._charts["ay"].series()
+                        if isinstance(s, QLineSeries) for p in s.points()
+                        if np.isfinite(p.y())), default=0)
+            span = max(3.2, float(np.ceil(peak * 1.05 * 10) / 10))
+            self._home_ranges["ay"] = (self._CONFIGS["ay"][2], (-span, span))
+            self._axes["ay"]["y"].setRange(-span, span)
 
         # Cache the raw data + current restraint/cond/height so the analysis
         # toggles can run later without the caller having to pass them again.
@@ -407,11 +365,10 @@ class ASTMChartView(QWidget):
             (np.array([6, 6, 4, 4, 3, 3, 2.5, 2.5]) * coef(ht, 'x')).tolist(),
             "", pen)
 
-        # ay limits
-        self._add_ref_line("ay",
-            [0.2, 1, 2, 14],
-            (np.array([3, 3, 2, 2]) * coef(ht, 'x')).tolist(),
-            "ASTM ay", pen)
+        # Draw the very same signed knots that Analyze uses.
+        lateral = self._astm_limit_axes(ht, prone)["ay"]
+        for side, sign in (("pos", "+"), ("neg", "-")):
+            self._add_ref_line("ay", *lateral[side], f"ASTM ay ({sign})", pen)
 
         # az limits
         self._add_ref_line("az",
@@ -544,9 +501,10 @@ class ASTMChartView(QWidget):
             self._add_ref_line("ax",
                 [0, 0.2, 1, 2, 4, 5, 11.8, 12, 14], a32.tolist(),
                 "", QPen(QColor("red"), 2))
-            self._add_ref_line("ay",
-                [0, 0.2, 1, 2, 14], a33.tolist(),
-                f"{restraint}", QPen(QColor("red"), 2))
+            lateral_pen = QPen(QColor("#9161C5"), 2, Qt.PenStyle.DashLine)
+            for sign, values in (("+", a33), ("-", -a33)):
+                self._add_ref_line("ay", self._RESTR_DT["ay"], values,
+                                   f"{restraint} ({sign})", lateral_pen)
             self._add_ref_line("az",
                 [0, 0.2, 0.5, 4, 7, 14], a34.tolist(),
                 "", QPen(QColor("red"), 2))
@@ -568,6 +526,7 @@ class ASTMChartView(QWidget):
         axes = self._axes[chart_name]
         s = create_line_series(x_data, y_data, color=color, name=name,
                                 width=LINE_WIDTH_FITTING,
+                                dash=name.lower().endswith(("(-)", "(left)", "(up)")),
                                 points_visible=points)
         chart.addSeries(s)
         s.attachAxis(axes["x"])
@@ -648,25 +607,10 @@ class ASTMChartView(QWidget):
         self._ref_series.clear()
 
     def recolor_measured(self, color: str) -> None:
-        """Recolour the measured series by sign, using shared colours.
-
-        The (−/Left/Up) traces become the shared bright green, the
-        (+/Right/Down) traces and egg overlays ("Measured") the shared bright
-        blue — regardless of *color*, so all measured curves read consistently
-        across datasets. The user-chosen dataset colour still applies to the
-        Trend plot and the sidebar swatch; this sign-coded colour scheme is an
-        intentional ASTM convention. Reference curves (``_ref_series``) are
-        untouched.
-        """
-        neg_markers = ("(-)", "(left)", "(up)")
+        """Apply the recording colour to its measured curves and legend."""
         for s in self._data_series:
-            name = (s.name() or "")
             pen = s.pen()
-            if name.lower().endswith(neg_markers):
-                pen.setColor(QColor(MEASURED_NEG_COLOR))
-            else:
-                # (+) traces AND egg overlays → bright blue.
-                pen.setColor(QColor(MEASURED_POS_COLOR))
+            pen.setColor(QColor(color))
             s.setPen(pen)
         # Swatch colours changed → rebuild the wrapping legends.
         self._refresh_legends()
@@ -743,6 +687,7 @@ class ASTMChartView(QWidget):
         self._egg_analysis_active = active
         self._clear_egg_analysis()
         self.failed_rules: set[str] = set()
+        self.egg_planes_checked = set()
         if not active or self._last_egg_data is None:
             return
         data = self._last_egg_data
@@ -764,6 +709,7 @@ class ASTMChartView(QWidget):
                 path = series_to_path(series)
                 if path is None:
                     continue
+                self.egg_planes_checked.add(chart_name)
                 viols = find_boundary_violations(
                     measured_xy, t_arr, [path], threshold)
                 for (i0, i1) in viols:
@@ -1017,13 +963,12 @@ class ASTMChartView(QWidget):
 
     # Map each measured-series name suffix to (axis, side) for the limit check.
     # side 'pos' = +acceleration (Right/Down), 'neg' = −acceleration (Left/Up).
-    # NB the ay (Left) trace is plotted as -neg, so its values are already in the
-    # same sign convention as the limit (neg limit is negative); compare directly.
+    # Signed measurements and limits can be compared directly on all three axes.
     _SUST_SERIES_MAP = {
         "measured ax (+)":  ('ax', 'pos'),
         "measured ax (-)":  ('ax', 'neg'),
-        "measured ay (right)": ('ay', 'pos'),
-        "measured ay (left)":  ('ay', 'neg'),
+        "measured ay (+)": ('ay', 'pos'),
+        "measured ay (-)": ('ay', 'neg'),
         "measured az (down)":  ('az', 'pos'),
         "measured az (up)":    ('az', 'neg'),
     }
@@ -1082,6 +1027,7 @@ class ASTMChartView(QWidget):
         self._sust_analysis_active = active
         self._clear_sust_analysis()
         self.sust_failed_rules: set[str] = set()
+        self.sust_axes_checked = set()
         if not active:
             return
 
@@ -1113,6 +1059,9 @@ class ASTMChartView(QWidget):
                 if dt < dt_lo or dt > self._SUST_DT_MAX:
                     continue
                 limit = self._interp_limit(curve[0], curve[1], dt)
+                if not np.isfinite(val) or not np.isfinite(limit):
+                    continue
+                self.sust_axes_checked.add(axis_side)
                 # pos side: value above the positive limit fails.
                 # neg side: value below the negative limit fails.
                 failed = val > limit if side == 'pos' else val < limit
