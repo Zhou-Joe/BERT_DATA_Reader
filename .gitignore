@@ -16,6 +16,7 @@ pip-delete-this-directory.txt
 # =====================================================================
 .venv/
 .venv-build/
+node_modules/
 venv/
 env/
 ENV/

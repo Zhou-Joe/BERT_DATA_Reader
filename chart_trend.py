@@ -45,7 +45,6 @@ class _SubChart(PanChartView):
         # Axes
         self._axis_x = QValueAxis()
         self._axis_x.setTitleText("Time (s)" if y_label == 'Vertical' else '')
-        self._axis_x.setTickCount(10)
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
 
         self._axis_y = QValueAxis()
@@ -55,6 +54,7 @@ class _SubChart(PanChartView):
         self._axis_y.setTitleText(self._y_label)
         self._axis_y.setTitleVisible(False)
         self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
+        self._fit_axis_labels()
 
         self.setChart(self._chart)
 
@@ -105,10 +105,15 @@ class _SubChart(PanChartView):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        # Ten ticks become ellipses on a laptop-sized chart. Allocate roughly
-        # 100px per timestamp so source times remain readable at narrow widths.
-        if hasattr(self, '_axis_x'):
-            self._axis_x.setTickCount(max(3, min(10, self.width() // 100)))
+        if hasattr(self, '_axis_y'):
+            self._fit_axis_labels()
+
+    def _fit_axis_labels(self):
+        self._axis_x.setTickCount(max(3, min(10, self.width() // 100)))
+        # Reserve room for the time axis below the trace on short panels.
+        self._axis_y.setTickCount(max(2, min(5, 1 + (self.height() - 60) // 24)))
+        for axis in (self._axis_x, self._axis_y):
+            axis.setTruncateLabels(False)
 
     @property
     def chart_obj(self) -> QChart:
@@ -127,7 +132,6 @@ class _SubChart(PanChartView):
         # Re-add clean axes
         self._axis_x = QValueAxis()
         self._axis_x.setTitleText("Time (s)" if self._y_label == 'Vertical' else '')
-        self._axis_x.setTickCount(10)
         self._chart.addAxis(self._axis_x, Qt.AlignmentFlag.AlignBottom)
 
         self._axis_y = QValueAxis()
@@ -135,6 +139,7 @@ class _SubChart(PanChartView):
         self._axis_y.setTitleText(self._y_label)
         self._axis_y.setTitleVisible(False)
         self._chart.addAxis(self._axis_y, Qt.AlignmentFlag.AlignLeft)
+        self._fit_axis_labels()
 
         # clear_chart() rebuilt the axes, so the rangeChanged connections from
         # __init__ are gone. Re-wire them so analysis labels still follow the
@@ -156,7 +161,7 @@ class _SubChart(PanChartView):
 
     def add_data_series(self, time_col, value_col, color: str) -> QLineSeries:
         series = create_line_series(time_col, value_col, color=color,
-                                     width=LINE_WIDTH_DEFAULT)
+                                     width=LINE_WIDTH_DEFAULT, display_lod=True)
         self._chart.addSeries(series)
         series.attachAxis(self._axis_x)
         series.attachAxis(self._axis_y)

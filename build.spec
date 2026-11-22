@@ -2,7 +2,7 @@
 """PyInstaller spec for BERT Reader — one-file build (clean venv).
 
 Built against a minimal uv venv containing only:
-  PySide6, PySide6-Fluent-Widgets (qfluentwidgets), pandas, numpy, scipy,
+  PySide6, QtAwesome, pandas, numpy, scipy,
   python-docx, matplotlib, pyinstaller
 
 The app only uses matplotlib.path.Path (for boundary hit-testing), NOT the
@@ -12,9 +12,7 @@ plotting backends — so the heavy GUI backends / toolkits are excluded.
 from PyInstaller.utils.hooks import (
     collect_data_files, collect_submodules, collect_dynamic_libs)
 
-# --- qfluentwidgets: SVG icons, QSS, QRC resources, every submodule ----------
-qfw_datas = collect_data_files('qfluentwidgets')
-qfw_hidden = collect_submodules('qfluentwidgets')
+icon_font_datas = collect_data_files('qtawesome')
 
 # --- PySide6 plugins (platforms/styles/imageformats/svg) ---------------------
 pyside6_datas = collect_data_files('PySide6')
@@ -24,7 +22,7 @@ pyside6_hidden = collect_submodules('PySide6')
 docx_datas = collect_data_files('docx')
 
 # --- App icon (SVG, loaded at runtime for the window icon) -------------------
-icon_datas = [('icon.svg', '.')]
+icon_datas = [('icon.svg', '.'), ('frontend/dist', 'frontend/dist')]
 
 block_cipher = None
 
@@ -32,9 +30,9 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=collect_dynamic_libs('PySide6'),
-    datas=qfw_datas + pyside6_datas + docx_datas + icon_datas,
-    hiddenimports=qfw_hidden + pyside6_hidden + [
-        'qfluentwidgets._rc',
+    datas=icon_font_datas + pyside6_datas + docx_datas + icon_datas,
+    hiddenimports=pyside6_hidden + [
+        'qtawesome',
         'PySide6.QtSvg',
         'PySide6.QtSvgWidgets',
     ],

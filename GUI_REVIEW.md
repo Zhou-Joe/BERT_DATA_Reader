@@ -6,14 +6,14 @@
   active dataset/filter controls. Secondary readouts live in the status bar.
 - Replaced the right-hand statistics cards with a searchable recording library.
   Compact rows show filename, channel group, acquisition rate, duration, colour,
-  visibility and an actions menu. Selection stays synchronized with the active
+  and visibility. Selection stays synchronized with the active
   dataset selector. A separate inspector shows only the selected signal's
-  statistics and orientation; Export and Edit stay accessible in a fixed footer.
+  statistics and orientation. Recording actions stay visible above the chart.
   A vertical splitter adjusts the balance between files and details.
 - Added useful empty states, recording counts and a trace palette that remains
   readable in both themes. Long filenames elide by available space with a full
   tooltip, and search is case-insensitive.
-- Consolidated peak alignment into a menu; plot modes now show their selection.
+- Exposed all six peak alignments and the manual time-shift controls on Trend.
 - Made analysis settings scroll at shorter window heights. Timestamp tick
   density follows the chart width. Dark-mode reference lines remain visible.
 - Validated command controls at 1100×720, 1366×768 and 1600×900 logical pixels.

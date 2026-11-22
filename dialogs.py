@@ -20,11 +20,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QGroupBox, QLabel, QWidget,
 )
 
-import qfluentwidgets as qfw
-from qfluentwidgets import (
-    SpinBox, DoubleSpinBox, LineEdit, ComboBox, CheckBox,
-    PushButton, PrimaryPushButton, SmoothScrollArea,
-)
+from PySide6.QtWidgets import QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox, QCheckBox, QPushButton, QScrollArea
+from ui_controls import PrimaryButton, warning, error
 
 from report_document import AccelerationReport
 from report_lateral import render_lateral_figure
@@ -36,15 +33,7 @@ from segment_preview import SegmentPreview, TimeField
 
 
 class _ThemedDialog(QDialog):
-    """QDialog that paints a theme-aware background AND palette.
-
-    Plain QDialog keeps the default light window colour even in dark mode
-    (qfluentwidgets only restyles Fluent widgets, not raw QDialogs). This base
-    paints the current theme's surface colour so the dialog matches the rest
-    of the dark UI, sets the widget palette so child widgets (QLabel, QGroupBox
-    titles, QFormLayout labels) inherit readable text colours, and re-applies
-    both on theme switches.
-    """
+    """Apply the workspace surface and text colours to secondary windows."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,7 +96,7 @@ class _ThemedWidget(QWidget):
 
 
 def _apply_dialog_margins(layout: QVBoxLayout) -> None:
-    """Comfortable Fluent spacing for dialog root layouts."""
+    """Apply shared margins to dialog content."""
     layout.setContentsMargins(20, 20, 20, 20)
     layout.setSpacing(12)
 
@@ -132,7 +121,7 @@ class TruncateTimeDialog(_ThemedDialog):
 
         layout = QVBoxLayout(self)
         _apply_dialog_margins(layout)
-        title = qfw.StrongBodyLabel(str(data.filename))
+        title = QLabel(str(data.filename))
         title.setTextFormat(Qt.TextFormat.PlainText)
         title.setWordWrap(True)
         layout.addWidget(title)
@@ -141,19 +130,19 @@ class TruncateTimeDialog(_ThemedDialog):
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Quiet gap"))
-        self._min_gap_spin = DoubleSpinBox()
+        self._min_gap_spin = QDoubleSpinBox()
         self._min_gap_spin.setRange(1.0, 120.0)
         self._min_gap_spin.setDecimals(1)
         self._min_gap_spin.setSuffix(" s")
         self._min_gap_spin.setValue(10.0)
         self._min_gap_spin.setToolTip("Minimum stop between tests. Increase to make fewer splits.")
         controls.addWidget(self._min_gap_spin)
-        self._auto_detect_btn = PushButton("Auto-detect")
+        self._auto_detect_btn = QPushButton("Auto-detect")
         self._auto_detect_btn.clicked.connect(self._on_auto_detect)
         controls.addWidget(self._auto_detect_btn)
         controls.addStretch()
         controls.addWidget(QLabel("Segments"))
-        self._count = SpinBox()
+        self._count = QSpinBox()
         self._count.setRange(1, 50)
         controls.addWidget(self._count)
         layout.addLayout(controls)
@@ -162,9 +151,9 @@ class TruncateTimeDialog(_ThemedDialog):
         self._notice.setWordWrap(True)
         self._notice.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._notice)
-        self._scroll = SmoothScrollArea()
+        self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(SmoothScrollArea.Shape.NoFrame)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         host = QWidget()
         self._form = QFormLayout(host)
         self._form.setContentsMargins(0, 0, 8, 0)
@@ -173,7 +162,7 @@ class TruncateTimeDialog(_ThemedDialog):
         layout.addWidget(self._scroll)
         self._start_spins, self._end_spins, self._keeps = [], [], []
 
-        self._replace_original = CheckBox("Remove original after creating segments")
+        self._replace_original = QCheckBox("Remove original after creating segments")
         self._replace_original.setChecked(False)
         layout.addWidget(self._replace_original)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -227,7 +216,7 @@ class TruncateTimeDialog(_ThemedDialog):
             for field, label in ((start, "Start"), (end, "End (exclusive)")):
                 field.setAccessibleName(f"Segment {i + 1}: {label}")
                 field.setToolTip(label + " in source seconds")
-            keep = CheckBox(f"Segment {i + 1}")
+            keep = QCheckBox(f"Segment {i + 1}")
             keep.setChecked(included)
             row = QHBoxLayout()
             row.addWidget(start)
@@ -346,7 +335,7 @@ class ExportDialog(_ThemedDialog):
         _apply_dialog_margins(layout)
 
         # Export type
-        self._export_type = ComboBox()
+        self._export_type = QComboBox()
         self._export_type.addItems([
             "Formated Data for Newtonviewer",
             "Filtered Clean Data",
@@ -355,8 +344,8 @@ class ExportDialog(_ThemedDialog):
         # Filename + suffix (combined row — bug fix: previously the
         # filename field was added twice, once on its own row and again
         # inside this suffix layout, producing a duplicated control).
-        self._filename = LineEdit()
-        self._suffix = ComboBox()
+        self._filename = QLineEdit()
+        self._suffix = QComboBox()
         self._suffix.addItems([".sup", ".sups", ".txt"])
 
         form = QFormLayout()
@@ -381,13 +370,10 @@ class ExportDialog(_ThemedDialog):
         name = self._filename.text().strip()
         if not name:
             # 空文件名：明确提示并保持对话框打开（旧代码静默 return）。
-            qfw.InfoBar.warning(
+            warning(
                 title="Export",
                 content="请输入文件名",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
                 duration=3000,
-                position=qfw.InfoBarPosition.TOP,
                 parent=self,
             )
             return
@@ -395,7 +381,7 @@ class ExportDialog(_ThemedDialog):
         if (self._export_type.currentText() == 'Filtered Clean Data'
                 and self._mainui.plottype != 'Raw'
                 and self._data._filtered_cutoff != self._mainui.cutoff_spin.value()):
-            qfw.InfoBar.warning(
+            warning(
                 title='Filter update pending',
                 content='Wait for the current filter results, then export again.',
                 duration=4000, parent=self)
@@ -434,13 +420,10 @@ class ExportDialog(_ThemedDialog):
             # 写盘失败（含文件被 Excel 等占用）：InfoBar 让失败可见（打包版无
             # 控制台，仅 print 用户看不到），且不 accept —— 对话框保持打开。
             print(f"Export error: {e}")
-            qfw.InfoBar.error(
+            error(
                 title="Export Failed",
                 content=f"导出失败：{e}",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
                 duration=-1,
-                position=qfw.InfoBarPosition.TOP,
                 parent=self,
             )
 
@@ -466,11 +449,11 @@ class EditDataDialog(_ThemedWidget):
         # --- Add section ---
         add_group = QGroupBox("Add Offset")
         add_form = QFormLayout()
-        self._add_x = DoubleSpinBox()
+        self._add_x = QDoubleSpinBox()
         self._add_x.setRange(-10, 10)
-        self._add_y = DoubleSpinBox()
+        self._add_y = QDoubleSpinBox()
         self._add_y.setRange(-10, 10)
-        self._add_z = DoubleSpinBox()
+        self._add_z = QDoubleSpinBox()
         self._add_z.setRange(-10, 10)
         add_form.addRow("Fore/Back (x):", self._add_x)
         add_form.addRow("Left/Right (y):", self._add_y)
@@ -478,20 +461,20 @@ class EditDataDialog(_ThemedWidget):
         add_group.setLayout(add_form)
         layout.addWidget(add_group)
 
-        btn_add = PrimaryPushButton("Apply Add")
+        btn_add = PrimaryButton("Apply Add")
         btn_add.clicked.connect(self._on_add)
         layout.addWidget(btn_add)
 
         # --- Multiply section ---
         mul_group = QGroupBox("Multiply Scale")
         mul_form = QFormLayout()
-        self._mul_x = DoubleSpinBox()
+        self._mul_x = QDoubleSpinBox()
         self._mul_x.setRange(-10, 10)
         self._mul_x.setValue(1.0)
-        self._mul_y = DoubleSpinBox()
+        self._mul_y = QDoubleSpinBox()
         self._mul_y.setRange(-10, 10)
         self._mul_y.setValue(1.0)
-        self._mul_z = DoubleSpinBox()
+        self._mul_z = QDoubleSpinBox()
         self._mul_z.setRange(-10, 10)
         self._mul_z.setValue(1.0)
         mul_form.addRow("Fore/Back (x):", self._mul_x)
@@ -500,11 +483,11 @@ class EditDataDialog(_ThemedWidget):
         mul_group.setLayout(mul_form)
         layout.addWidget(mul_group)
 
-        btn_mul = PrimaryPushButton("Apply Multiply")
+        btn_mul = PrimaryButton("Apply Multiply")
         btn_mul.clicked.connect(self._on_multiply)
         layout.addWidget(btn_mul)
 
-        btn_close = PushButton("Close")
+        btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
         layout.addWidget(btn_close)
 
@@ -555,16 +538,16 @@ class EditAngleDialog(_ThemedDialog):
         _apply_dialog_margins(layout)
 
         form = QFormLayout()
-        self._pitch = SpinBox()
+        self._pitch = QSpinBox()
         self._pitch.setRange(-180, 180)
         self._pitch.setSuffix(" °")
-        self._seatback = SpinBox()
+        self._seatback = QSpinBox()
         self._seatback.setRange(-180, 180)
         self._seatback.setSuffix(" °")
-        self._roll = SpinBox()
+        self._roll = QSpinBox()
         self._roll.setRange(-180, 180)
         self._roll.setSuffix(" °")
-        self._yaw = SpinBox()
+        self._yaw = QSpinBox()
         self._yaw.setRange(-180, 180)
         self._yaw.setSuffix(" °")
 
@@ -617,7 +600,7 @@ class CutoffFrequencyDialog(_ThemedDialog):
         _apply_dialog_margins(layout)
 
         form = QFormLayout()
-        self._freq = SpinBox()
+        self._freq = QSpinBox()
         self._freq.setRange(1, 249)
         self._freq.setValue(mainui.cutoff)
         self._freq.setSuffix(" Hz")
@@ -840,6 +823,76 @@ def _chart_legend_entries(chart, limit: int = 8) -> list:
     return out[:limit]
 
 
+def evaluate_recording(mu, data, mods, *, color=None, z_source="Standard",
+                       xy_source="Standard", deadband=0.05):
+    """Evaluate the selected checks with the same charts and rules as the Word report."""
+    data.filter_data(cutoff=mu.cutoff)
+    restraint = mu.select_restraint.currentText()
+    cond = mu.select_cond.currentText()
+    height = mu.height_input.value()
+    prone = mu._prone_btn.isChecked()
+
+    # --- Plot every SELECTED chart for this dataset --------------
+    # Unchecked modules are skipped entirely: not plotted, not
+    # analyzed, not captured — faster, and no stale canvas state
+    # gets written into the report.
+    # Plot directly: the UI convenience wrappers swallow exceptions,
+    # which could export the preceding recording's chart as this one.
+    for key, canvas in (("sust", mu.canvasASTMSust), ("egg", mu.canvasASTMEgg)):
+        if mods[key]:
+            canvas.addplotxyz(data=mu._select_data(data), restraint=restraint,
+                              cond=cond, input_height=height, prone=prone,
+                              color=color)
+    if mods.get("gb", True):
+        mu.canvasGB.addplotxyz(data=mu._select_data(data), color=color)
+    # Acc Zone 分析强制 1 Hz 数据：与主窗口 _generate_acczone 同口径
+    # （calculate_sampling_frequency → get_1hz_standard_frame），不能
+    # 走 plotGB_checkbox→_select_data —— 后者按全局 plottype 选帧，
+    # 会导致 Zone 分类结论写错进报告。
+    if mods.get("acczone", True):
+        if hasattr(data, "calculate_sampling_frequency"):
+            data.calculate_sampling_frequency()
+        df_acczone = data.get_1hz_standard_frame()
+        mu.canvasAccZone.addplotxyz(data=df_acczone, color=color)
+
+    # Reversal charts. Plot the standard frame at the current
+    # cutoff, then set allowance/deadband so Analyze has the right
+    # limits to check against (setup shared by both, plotting
+    # per-selection).
+    if mods.get("zr", True) or mods.get("xr", True):
+        if hasattr(data, "calculate_sampling_frequency"):
+            data.calculate_sampling_frequency()
+        data.filter_data(cutoff=mu.cutoff)
+        fs = getattr(data, "fs", 500)
+        if mods.get("zr", True):
+            mu.canvasZReversal.plot_data(mu._data_for_plottype(data, z_source), color, fs)
+        if mods.get("xr", True):
+            mu.canvasXYReversal.plot_data(mu._data_for_plottype(data, xy_source), color, fs)
+            mu.canvasXYReversal.set_allowance({
+                "x": allowance_at_t0("x", restraint, cond, height),
+                "y": allowance_at_t0("y", restraint, cond, height),
+            })
+            mu.canvasXYReversal.set_deadband(deadband)
+
+    # --- Force Analyze ON for every SELECTED chart so the image
+    #     includes the overlays (markers/bands/zone outline). ----
+    if mods.get("sust", True):
+        mu.canvasASTMSust.toggle_sust_analysis(
+            True, restraint, cond, height, prone)
+    if mods.get("egg", True):
+        mu.canvasASTMEgg.toggle_egg_analysis(True)
+    if mods.get("gb", True):
+        mu.canvasGB.toggle_comb_analysis(True)
+    if mods.get("acczone", True):
+        mu.canvasAccZone.toggle_analysis(True)
+    if mods.get("zr", True):
+        mu.canvasZReversal.toggle_analysis(True)
+    if mods.get("xr", True):
+        mu.canvasXYReversal.toggle_analysis(True)
+
+    return ReportDialog._collect_verdicts(mu, mods)
+
+
 class ReportDialog(_ThemedDialog):
     """Dialog for selecting datasets and generating a Word report."""
 
@@ -857,7 +910,7 @@ class ReportDialog(_ThemedDialog):
 
         layout = QVBoxLayout(self)
         _apply_dialog_margins(layout)
-        layout.addWidget(qfw.SubtitleLabel("Create a Word report"))
+        layout.addWidget(QLabel("Create a Word report"))
         plot = {"Standard": "Calibrated", "Filter": "Filtered", "Raw": "Raw"}[mainui.plottype]
         summary = QLabel(
             f"Signal: {plot}   ·   Low-pass setting: {mainui.cutoff_spin.value()} Hz\n"
@@ -872,8 +925,8 @@ class ReportDialog(_ThemedDialog):
         layout.addWidget(summary)
 
         # Scrollable checkbox list
-        layout.addWidget(qfw.StrongBodyLabel("Recordings"))
-        scroll = SmoothScrollArea()
+        layout.addWidget(QLabel("Recordings"))
+        scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setMinimumHeight(68)
         scroll.setMaximumHeight(160)
@@ -881,7 +934,7 @@ class ReportDialog(_ThemedDialog):
         scroll_layout = QVBoxLayout(scroll_widget)
         active = mainui.select_data.currentText()
         for name in mainui.datadict.keys():
-            cb = CheckBox(name)
+            cb = QCheckBox(name)
             cb.setChecked(name == active)
             cb.setToolTip(name)
             self._checkboxes.append(cb)
@@ -898,7 +951,7 @@ class ReportDialog(_ThemedDialog):
         # generation loop plots/analyzes. An unchecked module is skipped
         # entirely — not plotted, not screenshotted, not written — which also
         # speeds up generation. Defaults keep the previous all-in behavior.
-        layout.addWidget(qfw.StrongBodyLabel("Report sections"))
+        layout.addWidget(QLabel("Report sections"))
         module_defs = [
             ("trend",   "Trend and signal statistics"),
             ("sust",    "ASTM Sustained Acceleration"),
@@ -913,7 +966,7 @@ class ReportDialog(_ThemedDialog):
         mod_layout = QGridLayout(mod_widget)
         mod_layout.setContentsMargins(0, 0, 0, 0)
         for index, (mod_key, mod_label) in enumerate(module_defs):
-            mod_cb = CheckBox(mod_label)
+            mod_cb = QCheckBox(mod_label)
             mod_cb.setChecked(True)
             self._module_boxes[mod_key] = mod_cb
             mod_layout.addWidget(mod_cb, index % 4, index // 4)
@@ -922,10 +975,10 @@ class ReportDialog(_ThemedDialog):
         footer = QHBoxLayout()
         count = QLabel()
         footer.addWidget(count, 1)
-        cancel = PushButton("Cancel")
+        cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
         footer.addWidget(cancel)
-        generate = PrimaryPushButton("Generate Word report")
+        generate = PrimaryButton("Generate Word report")
         generate.setDefault(True)
         generate.clicked.connect(self._on_ok)
         footer.addWidget(generate)
@@ -958,18 +1011,16 @@ class ReportDialog(_ThemedDialog):
             self._generating = False
             self._mainui._end_report_processing()
 
-    def _generate(self, data_list) -> None:
+    def _generate(self, data_list, *, output_path=None, z_source="Standard",
+                  xy_source="Standard", deadband=0.05):
         if not data_list:
             return
         mods = {k: cb.isChecked() for k, cb in self._module_boxes.items()}
         if not any(mods.values()):
-            qfw.InfoBar.warning(
+            warning(
                 title="No Module Selected",
                 content="请至少勾选一个报告模块",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
                 duration=3000,
-                position=qfw.InfoBarPosition.TOP,
                 parent=self,
             )
             return
@@ -980,18 +1031,20 @@ class ReportDialog(_ThemedDialog):
         # 让用户选择输出路径：打包版（console=False）的进程 CWD 可能是只读的
         # 安装目录，固定相对名既可能写不进去，也会静默覆盖同名旧文件。默认名
         # acceleration_plot_<yyyymmdd_HHMM>.docx，落在系统"文档"目录。
-        docs_dir = QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.DocumentsLocation
-        ) or os.path.expanduser("~")
-        default_path = os.path.join(
-            docs_dir,
-            datetime.now().strftime("acceleration_plot_%Y%m%d_%H%M.docx"))
-        out_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Report", default_path, "Word Documents (*.docx)")
-        if not out_path:
-            return  # 用户取消了保存
-        if not out_path.lower().endswith(".docx"):
-            out_path += ".docx"
+        out_path = output_path
+        if out_path is None:
+            docs_dir = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DocumentsLocation
+            ) or os.path.expanduser("~")
+            default_path = os.path.join(
+                docs_dir,
+                datetime.now().strftime("acceleration_plot_%Y%m%d_%H%M.docx"))
+            out_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Report", default_path, "Word Documents (*.docx)")
+            if not out_path:
+                return  # 用户取消了保存
+            if not out_path.lower().endswith(".docx"):
+                out_path += ".docx"
 
         # Snapshot each canvas's analysis state so we can FORCE Analyze on for
         # the report images and restore the user's prior choice afterwards (no
@@ -1027,79 +1080,12 @@ class ReportDialog(_ThemedDialog):
                 data = mu.datadict.get(data_name)
                 if data is None:
                     continue
-                # A background refresh may have been cancelled for export.
-                # Bring this recording to the requested cutoff BEFORE any
-                # chart or verdict reads its filtered/calibrated frame.
-                data.filter_data(cutoff=mu.cutoff)
+                verdicts = evaluate_recording(mu, data, mods, color=mu.dataset_colors.get(data_name),
+                                              z_source=z_source, xy_source=xy_source, deadband=deadband)
                 restraint = mu.select_restraint.currentText()
                 cond = mu.select_cond.currentText()
                 height = mu.height_input.value()
                 prone = mu._prone_btn.isChecked()
-
-                # --- Plot every SELECTED chart for this dataset --------------
-                # Unchecked modules are skipped entirely: not plotted, not
-                # analyzed, not captured — faster, and no stale canvas state
-                # gets written into the report.
-                # Plot directly: the UI convenience wrappers swallow exceptions,
-                # which could export the preceding recording's chart as this one.
-                for key, canvas in (("sust", mu.canvasASTMSust), ("egg", mu.canvasASTMEgg)):
-                    if mods[key]:
-                        canvas.addplotxyz(data=mu._select_data(data), restraint=restraint,
-                                          cond=cond, input_height=height, prone=prone,
-                                          color=mu.dataset_colors.get(data_name))
-                if mods.get("gb", True):
-                    mu.canvasGB.addplotxyz(data=mu._select_data(data),
-                                           color=mu.dataset_colors.get(data_name))
-                # Acc Zone 分析强制 1 Hz 数据：与主窗口 _generate_acczone 同口径
-                # （calculate_sampling_frequency → get_1hz_standard_frame），不能
-                # 走 plotGB_checkbox→_select_data —— 后者按全局 plottype 选帧，
-                # 会导致 Zone 分类结论写错进报告。
-                if mods.get("acczone", True):
-                    if hasattr(data, "calculate_sampling_frequency"):
-                        data.calculate_sampling_frequency()
-                    df_acczone = data.get_1hz_standard_frame()
-                    mu.canvasAccZone.addplotxyz(
-                        data=df_acczone, color=mu.dataset_colors.get(data_name))
-
-                # Reversal charts. Plot the standard frame at the current
-                # cutoff, then set allowance/deadband so Analyze has the right
-                # limits to check against (setup shared by both, plotting
-                # per-selection).
-                if mods.get("zr", True) or mods.get("xr", True):
-                    if hasattr(data, "calculate_sampling_frequency"):
-                        data.calculate_sampling_frequency()
-                    data.filter_data(cutoff=mu.cutoff)
-                    fs = getattr(data, "fs", 500)
-                    df_rev = mu._data_for_plottype(data, "Standard")
-                    color = mu.dataset_colors.get(data_name)
-                    if mods.get("zr", True):
-                        mu.canvasZReversal.plot_data(df_rev, color, fs)
-                    if mods.get("xr", True):
-                        mu.canvasXYReversal.plot_data(df_rev, color, fs)
-                        mu.canvasXYReversal.set_allowance({
-                            "x": allowance_at_t0("x", restraint, cond, height),
-                            "y": allowance_at_t0("y", restraint, cond, height),
-                        })
-                        mu.canvasXYReversal.set_deadband(0.05)
-
-                # --- Force Analyze ON for every SELECTED chart so the image
-                #     includes the overlays (markers/bands/zone outline). ----
-                if mods.get("sust", True):
-                    mu.canvasASTMSust.toggle_sust_analysis(
-                        True, restraint, cond, height, prone)
-                if mods.get("egg", True):
-                    mu.canvasASTMEgg.toggle_egg_analysis(True)
-                if mods.get("gb", True):
-                    mu.canvasGB.toggle_comb_analysis(True)
-                if mods.get("acczone", True):
-                    mu.canvasAccZone.toggle_analysis(True)
-                if mods.get("zr", True):
-                    mu.canvasZReversal.toggle_analysis(True)
-                if mods.get("xr", True):
-                    mu.canvasXYReversal.toggle_analysis(True)
-
-                # --- Gather verdicts (pass/fail + message) -------------------
-                verdicts = self._collect_verdicts(mu, mods)
 
                 # --- 泵事件循环 + 显式等比例：让延迟任务在截图前跑完 --------
                 # egg/GB/AccZone 的等比例（equalize_eggs / equalize_comb /
@@ -1242,21 +1228,21 @@ class ReportDialog(_ThemedDialog):
 
                 doc.add_record(data, data_name, verdicts, tmpdir, mods, sections,
                                plot_type=mu.plottype, cutoff=mu.cutoff, restraint=restraint,
-                               condition=cond, height=height, prone=prone)
+                               condition=cond, height=height, prone=prone,
+                               z_source=z_source, xy_source=xy_source, deadband=deadband)
 
             try:
                 doc.save(out_path)
             except PermissionError:
+                if output_path is not None:
+                    raise
                 # 输出文件被 Word 等程序占用 —— 打包版无控制台，仅 print 用户
                 # 完全看不到，必须用 InfoBar 让失败可见。对话框保持打开以便重试。
                 print(f"Report save error (file locked): {out_path}")
-                qfw.InfoBar.error(
+                error(
                     title="Report Failed",
                     content="输出文件被占用，请关闭 Word 后重试",
-                    orient=Qt.Orientation.Horizontal,
-                    isClosable=True,
                     duration=-1,
-                    position=qfw.InfoBarPosition.TOP,
                     parent=self,
                 )
             else:
@@ -1266,14 +1252,13 @@ class ReportDialog(_ThemedDialog):
                 self.accept()
 
         except Exception as e:
+            if output_path is not None:
+                raise
             print(f"Report error: {e}")
-            qfw.InfoBar.error(
+            error(
                 title="Report Failed",
                 content=f"报告生成失败：{e}",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
                 duration=-1,
-                position=qfw.InfoBarPosition.TOP,
                 parent=self,
             )
 

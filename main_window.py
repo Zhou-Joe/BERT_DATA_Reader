@@ -18,14 +18,11 @@ from PySide6.QtWidgets import (
     QToolBar, QWidget, QFileDialog,
     QLabel, QFrame, QToolButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QSizePolicy,
-    QApplication, QMenu,
+    QApplication,
 )
 
-import qfluentwidgets as qfw
-from qfluentwidgets import (
-    Action, ComboBox, SpinBox, DoubleSpinBox, PushButton, PrimaryPushButton,
-    ToggleToolButton, TransparentToolButton, FluentIcon as FI,
-)
+from PySide6.QtWidgets import QComboBox, QSpinBox, QDoubleSpinBox, QPushButton
+from ui_controls import icon, icon_action, PrimaryButton
 
 import accdata
 from sidebar import DataSidebar, InfoCard
@@ -36,8 +33,7 @@ from chart_acczone import AccZoneChartView
 from chart_astm import ASTMChartView
 from chart_reversal import ZReversalChartView, XYReversalChartView
 from sci_calculation import allowance_at_t0
-from nav_icons import NavIcon
-from workspace_shell import AtlasPlate, WorkspaceWindow, caption
+from workspace_shell import WorkspaceWindow, caption
 from processing_controller import ProcessingController
 from theme import DATASET_COLORS, theme_manager
 
@@ -60,8 +56,7 @@ def _add_chart_toolbar(toolbar: QToolBar, chart_widget) -> None:
     chart_widget can be a QChartView (AccZoneChartView) or a QWidget container
     (TrendChartView, ASTMChartView, GBChartView) that has zoom_mode() method.
 
-    Zoom and pan are mutually exclusive. Native toolbar actions remain
-    accessible through the overflow menu on a narrow chart.
+    Zoom and pan are mutually exclusive.
     """
     zoom_btn = toolbar.addAction('Zoom')
     zoom_btn.setCheckable(True)
@@ -102,7 +97,7 @@ def _add_chart_toolbar(toolbar: QToolBar, chart_widget) -> None:
         chart_widget.zoom_mode("default")
         chart_widget.reset_view()
 
-    a_reset = Action(FI.SYNC, "Reset", toolbar)
+    a_reset = icon_action('arrow-counter-clockwise', "Reset", toolbar)
     a_reset.setToolTip('Reset view')
     a_reset.setStatusTip("Reset chart to fit all data")
     a_reset.triggered.connect(_reset)
@@ -144,12 +139,12 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         # set_dataset_color read them, but they are no longer placed in any
         # toolbar. _wire_data_selector_sync() (called from _build_top_bar)
         # fans the top-bar selection out to all of them.
-        self.select_plot_tab2 = ComboBox()
-        self.select_plot_tab2b = ComboBox()   # mirror for the split ASTM tab
-        self.select_plot_tab3 = ComboBox()
-        self.select_plot_tab4 = ComboBox()
-        self.select_plot_tab5 = ComboBox()    # Z Reversal tab
-        self.select_plot_tab6 = ComboBox()    # X/Y Reversal tab
+        self.select_plot_tab2 = QComboBox()
+        self.select_plot_tab2b = QComboBox()   # mirror for the split ASTM tab
+        self.select_plot_tab3 = QComboBox()
+        self.select_plot_tab4 = QComboBox()
+        self.select_plot_tab5 = QComboBox()    # Z Reversal tab
+        self.select_plot_tab6 = QComboBox()    # X/Y Reversal tab
         self._data_combos = [
             self.select_plot_tab2, self.select_plot_tab2b,
             self.select_plot_tab3, self.select_plot_tab4,
@@ -170,39 +165,19 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         # startup free of synthetic plots also leaves the empty state stable.
 
     def _on_theme_changed(self, _mode: str) -> None:
-        """Refresh chart palettes after a light/dark switch.
-
-        qfluentwidgets restyles all Fluent widgets automatically on theme
-        change — no global QSS re-apply, no inline-style re-render needed
-        (this is the big perf win over the old hand-rolled theme system).
-        Only the Qt Charts layer needs a manual nudge because charts live on
-        a QGraphicsScene and ignore QSS.
-        """
+        """Refresh the workspace when the appearance changes."""
         if hasattr(self, 'theme_toggle'):
             self.theme_toggle.blockSignals(True)
             self.theme_toggle.setChecked(theme_manager.is_dark)
             self.theme_toggle.blockSignals(False)
-            self._theme_toggle_icon = FI.QUIET_HOURS if theme_manager.is_dark else FI.BRIGHTNESS
+
         self.refresh_theme()
         if hasattr(self, '_processing_state'):
             self._set_processing_state(self._processing_state, self._workspace_title.toolTip())
 
     def refresh_theme(self) -> None:
-        """Re-apply chart palettes + non-Fluent widget QSS after a theme switch.
-
-        Fluent widgets self-update via qfluentwidgets' themeChanged signal.
-        This (1) restyles the Qt Charts canvases (which bypass QSS), and
-        (2) applies token-driven QSS on the WINDOW widget so non-Fluent widgets
-        (QToolBar action buttons, QLabel, QGroupBox titles) become readable in
-        dark mode — the app-level stylesheet can't be used because qfluentwidgets
-        owns it. It also (3) re-renders every toolbar action's FluentIcon for
-        the current theme, because QAction caches the icon pixmap at build time
-        and doesn't refresh it on a theme switch.
-        """
-        # Theme-aware QSS for non-Fluent widgets (toolbar buttons, labels...).
+        """Apply the active palette to controls, icons and chart canvases."""
         self.setStyleSheet(theme_manager.app_qss)
-        # Re-render FluentIcons on toolbar actions + title-bar buttons for the
-        # current theme (they're cached at light-mode build time).
         self._refresh_action_icons()
         self.sidebar.refresh_theme()
         for canvas in (self.trendplot, self.canvasASTMSust, self.canvasASTMEgg,
@@ -211,53 +186,14 @@ class MainWindow(ProcessingController, WorkspaceWindow):
             if hasattr(canvas, "restyle_theme"):
                 canvas.restyle_theme()
 
-    def _refresh_action_icons(self) -> None:
-        """Re-render every FluentIcon-bearing action/button for the live theme.
-
-        QAction icons (and TransparentToolButton icons in the title bar) are
-        rasterised once at construction; qfluentwidgets only auto-refreshes its
-        own Fluent widget classes, so plain QToolBar actions stay on the
-        build-time palette. We re-emit ``fluentIcon.icon(theme=...)`` for each.
-        """
-        from qfluentwidgets import Theme
-        target_theme = Theme.DARK if theme_manager.is_dark else Theme.LIGHT
-        # Toolbar actions.
-        for tb in self.findChildren(QToolBar):
-            for a in tb.actions():
-                fi = getattr(a, "fluentIcon", None)
-                if fi is not None:
-                    try:
-                        a.setIcon(fi.icon(theme=target_theme))
-                    except Exception:
-                        pass
-        # Title-bar toggle icon.
-        tt = getattr(self, "theme_toggle", None)
-        if tt is not None:
-            fi = getattr(self, "_theme_toggle_icon", None)
-            if fi is not None:
-                try:
-                    tt.setIcon(fi.icon(theme=target_theme))
-                except Exception:
-                    pass
-        # Top-bar QToolButtons (Add/Clear/Generate/Annot) — these aren't in a
-        # QToolBar so the loop above misses them. Re-apply a fresh theme-aware
-        # qicon (FluentIconEngine reads the live theme at paint time) + nudge a
-        # repaint so the new-theme icon shows immediately.
-        top_bar = getattr(self, "_top_bar", None)
-        if top_bar is not None:
-            for btn in top_bar.findChildren(QToolButton):
-                a = getattr(btn, "_action", None)
-                if a is None:
-                    # Fall back to matching by text — _tb_button_for doesn't tag
-                    # the action on the button, so walk the actions list.
-                    continue
-                fi = getattr(a, "fluentIcon", None)
-                if fi is not None and hasattr(fi, "qicon"):
-                    try:
-                        btn.setIcon(fi.qicon())
-                        btn.update()
-                    except Exception:
-                        pass
+    def _refresh_action_icons(self):
+        for action in self.findChildren(QAction):
+            if action.property('glyph'):
+                action.setIcon(icon(action.property('glyph')))
+        for button in self._import_buttons:
+            button.setIcon(icon(button.property('formatGlyph') or 'folder-plus'))
+        self._library_toggle.setIcon(icon('books'))
+        self.theme_toggle.setIcon(icon('sun' if theme_manager.is_dark else 'moon'))
 
     # ==================================================================
     # UI Setup
@@ -265,14 +201,11 @@ class MainWindow(ProcessingController, WorkspaceWindow):
 
     def _setup_ui(self) -> None:
         # All import entry points use the same labels and readers.
-        self._import_menu = QMenu(self)
-        for label, reader in [
-            ("Raw DAQ recording…", self.open_raw_data),
-            ("Acceleration recording / SUP…", self.open_accel_data),
-            ("SensorConnect CSV…", self.open_sensorconnect_data),
-            ("Legacy SensorConnect SUP (512 Hz)…", self.open_legacy_sensorconnect_data),
-        ]:
-            self._import_menu.addAction(label, reader)
+        self._import_formats = [
+            ('activity', 'Raw DAQ recording', self.open_raw_data),
+            ('file-text', 'Acceleration recording / SUP', self.open_accel_data),
+            ('waves', 'SensorConnect CSV', self.open_sensorconnect_data),
+        ]
         self._import_buttons = []
         self.sidebar = DataSidebar(self)
         self._library_host = self.sidebar
@@ -303,23 +236,12 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         self._update_view_heading()
 
         self._build_control_panel()
+        self._update_workspace_state()
 
         self._setup_theme_toggle()
 
         # --- Status bar ---
         self.statusBar().showMessage("Ready")
-
-    def _import_button(self, label):
-        button = QToolButton()
-        button.setObjectName("importButton")
-        button.setText(label)
-        button.setIcon(FI.FOLDER_ADD.qicon())
-        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        button.setMenu(self._import_menu)
-        button.setToolTip("Choose a recording format to import")
-        self._import_buttons.append(button)
-        return button
 
     def _find_recording(self):
         self._library_manually_set = True
@@ -330,31 +252,30 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         page = self.stackedWidget.currentWidget()
         if page:
             index = self.stackedWidget.currentIndex()
-            section = next(value for start, value in reversed(self.GROUPS.items()) if start <= index)
-            self._view_kicker.setText(f'WORKSPACE   /   {section}     •     {index + 1:02d} OF 07')
             self._view_heading.setText('Signal timeline' if index == 0 else page.windowTitle())
             self._nav_buttons[index].setChecked(True)
+            for i in range(self.stackedWidget.count()):
+                self.stackedWidget.widget(i)._tools.setVisible(i == index)
 
     def _add_chart_page(self, page, icon, title):
         page.setWindowTitle(title)
         self._register_view(page, icon, title)
 
     # -- helper: wrap a page widget + its toolbar into a vertical layout ------
-    @staticmethod
-    def _make_page(object_name: str, toolbars, central, margins=(16, 10, 16, 12)):
-        """Build a nav page: stacked toolbars on top, central widget below.
-
-        ``toolbars`` is a list of QToolBar (top-to-bottom). ``central`` is the
-        chart/content widget (given stretch 1). Returns the page QWidget ready
-        to pass to ``addSubInterface`` (caller sets objectName before adding).
-        """
+    def _make_page(self, object_name: str, toolbars, central, margins=(16, 6, 16, 10)):
+        """Keep chart commands above the plot and the resizable library."""
         page = QWidget()
         page.setObjectName(object_name)
         lay = QVBoxLayout(page)
         lay.setContentsMargins(*margins)
         lay.setSpacing(6)
+        page._tools = QWidget()
+        tools_layout = QVBoxLayout(page._tools)
+        tools_layout.setContentsMargins(0, 0, 0, 0)
+        tools_layout.setSpacing(4)
         for tb in toolbars:
-            lay.addWidget(tb)
+            tools_layout.addWidget(tb)
+        self._chart_tools_layout.addWidget(page._tools)
         page._chart_content = central
         page._pending_label = QLabel(page)
         page._pending_label.setObjectName('pendingChart')
@@ -368,23 +289,19 @@ class MainWindow(ProcessingController, WorkspaceWindow):
 
     def _setup_theme_toggle(self) -> None:
         """Place the appearance switch beside the workspace actions."""
-        self.theme_toggle = TransparentToolButton(self)
-        # Store the FluentIcon so refresh_theme can re-render it for the
-        # current theme (TransparentToolButton caches the icon pixmap).
-        self._theme_toggle_icon = FI.BRIGHTNESS
-        self.theme_toggle.setIcon(FI.BRIGHTNESS)
+        self.theme_toggle = QToolButton(self)
+        self.theme_toggle.setIcon(icon('moon'))
         self.theme_toggle.setToolTip("Toggle light / dark theme")
         self.theme_toggle.setStatusTip("Toggle light / dark theme")
         self.theme_toggle.setCheckable(True)
         self.theme_toggle.setChecked(theme_manager.is_dark)
         self.theme_toggle.toggled.connect(self._toggle_theme)
-        # index 3 = just before the min/max/close buttons group.
         self._header_actions.addWidget(self.theme_toggle)
 
     @staticmethod
     def _apply_elevation(widget: QWidget, blur: int = 18, dy: int = 3,
                          alpha: int = 40) -> None:
-        """Attach a soft Fluent-style drop shadow to *widget*.
+        """Attach a soft drop shadow to *widget*.
 
         Kept for callers that still want a drop shadow (e.g. dialog cards).
         Skips silently if QGraphicsDropShadowEffect isn't usable.
@@ -418,88 +335,48 @@ class MainWindow(ProcessingController, WorkspaceWindow):
     # Persistent workspace commands and active source.
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _vline() -> QFrame:
-        """A thin vertical separator for the top bar."""
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.VLine)
-        line.setFixedSize(2, 22)
-        line.setStyleSheet("color: rgba(128,128,128,110);")
-        return line
-
-    def _tb_button_for(self, action: QAction) -> QToolButton:
-        """Build a flat QToolButton wired to an Action for the top bar.
-
-        Uses ``fluentIcon.qicon()`` (a FluentIconEngine-backed QIcon) when the
-        action carries a FluentIcon, so the icon recolours automatically on a
-        light/dark theme switch. ``action.icon()`` alone bakes a single-theme
-        pixmap at construction and stays stale after a theme change.
-        """
-        btn = QToolButton(self._top_bar)
-        btn._action = action   # tagged for _refresh_action_icons theme refresh
-        btn.setText(action.text())
-        btn.setIcon(self._themed_action_icon(action))
-        btn.setToolTip(action.toolTip() or action.text())
-        btn.setStatusTip(action.statusTip() or action.text())
-        btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        btn.setAutoRaise(True)
-        btn.setIconSize(QSize(16, 16))
-        # Connect both triggered paths (click + action re-emit).
-        btn.clicked.connect(action.trigger)
-        action.changed.connect(
-            lambda a=action, b=btn: (b.setText(a.text()),
-                                     b.setIcon(self._themed_action_icon(a)),
-                                     b.setEnabled(a.isEnabled())))
-        return btn
-
-    @staticmethod
-    def _themed_action_icon(action: QAction) -> QIcon:
-        """Return a theme-aware QIcon for a Fluent action, else the raw icon."""
-        fi = getattr(action, "fluentIcon", None)
-        if fi is not None and hasattr(fi, "qicon"):
-            return fi.qicon()
-        return action.icon()
+    def _tb_button_for(self, action):
+        button = QToolButton(self._top_bar)
+        button.setDefaultAction(action)
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        return button
 
     def _build_top_bar(self) -> None:
-        """Two deliberate rows: file actions, then the active analysis input."""
+        """Keep file commands, import formats and analysis inputs visible."""
         lay = self._top_bar_layout
         actions = self._header_actions = QHBoxLayout()
         actions.setSpacing(8)
         heading = QVBoxLayout()
         heading.setSpacing(2)
-        self._view_kicker = caption('WORKSPACE')
         self._view_heading = caption('', 'workspaceTitle')
-        heading.addWidget(self._view_kicker)
         heading.addWidget(self._view_heading)
         actions.addLayout(heading)
         actions.addSpacing(8)
         self._workspace_title = QLabel()
         actions.addWidget(self._workspace_title, 0, Qt.AlignmentFlag.AlignVCenter)
         actions.addStretch(1)
-        self._data_actions = []
-        actions.addWidget(self._import_button("Import"))
-        file_menu = QMenu(self)
-        for icon, text, slot in [
-            (FI.SHARE, "Export all", self._export_all_to_sup),
-            (FI.DOCUMENT, "Word report", self._show_report_dialog),
-            (FI.DELETE, "Clear all", lambda: self.reset_trend(reset_datalist=True)),
+        self._data_actions = {}
+        files = QHBoxLayout()
+        files.addWidget(caption('IMPORT'))
+        for glyph, label, reader in self._import_formats:
+            button = QPushButton(label)
+            button.setProperty('formatGlyph', glyph)
+            button.clicked.connect(reader)
+            self._import_buttons.append(button)
+            files.addWidget(button)
+        files.addStretch(1)
+        for glyph, text, slot in [
+            ('export', "Export all", self._export_all_to_sup),
+            ('file-text', "Word report", self._show_report_dialog),
+            ('trash', "Clear all", lambda: self.reset_trend(reset_datalist=True)),
         ]:
-            action = Action(icon, text, self)
+            action = icon_action(glyph, text, self)
             action.triggered.connect(slot)
-            if text == 'Word report':
-                actions.addWidget(self._tb_button_for(action))
-            else:
-                file_menu.addAction(action)
-            self._data_actions.append(action)
-        more = QToolButton()
-        more.setText('More')
-        more.setToolTip('Export or clear the workspace')
-        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        more.setMenu(file_menu)
-        actions.addWidget(more)
-        actions.addWidget(self._vline())
+            actions.addWidget(self._tb_button_for(action))
+            self._data_actions[text] = action
         self._library_toggle = QToolButton()
         self._library_toggle.setText("Library")
+        self._library_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self._library_toggle.setCheckable(True)
         self._library_manually_set = False
         self._library_toggle.clicked.connect(self._remember_library_choice)
@@ -508,21 +385,23 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         actions.addWidget(self._library_toggle)
         QShortcut(QKeySequence.StandardKey.Find, self, activated=self._find_recording)
         lay.addLayout(actions)
+        lay.addLayout(files)
 
         inputs = QHBoxLayout()
         inputs.setSpacing(10)
         inputs.addWidget(caption('SOURCE'))
-        self.select_data = ComboBox()
+        self.select_data = QComboBox()
+        self.select_data.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.select_data.setMinimumWidth(150)
         self.select_data.setSizePolicy(QSizePolicy.Policy.Expanding,
                                        QSizePolicy.Policy.Fixed)
         self.select_data.setToolTip("Active dataset for the standard and reversal charts")
         inputs.addWidget(self.select_data, 1)
-        self._generate_button = PrimaryPushButton("Update charts")
+        self._generate_button = PrimaryButton("Update charts")
         self._generate_button.setToolTip("Refresh all analysis charts for the selected dataset")
         self._generate_button.clicked.connect(self._generate_active_page)
         inputs.addWidget(caption('LOW-PASS'))
-        self.cutoff_spin = SpinBox()
+        self.cutoff_spin = QSpinBox()
         self.cutoff_spin.setRange(1, 249)
         self.cutoff_spin.setValue(self.cutoff)
         self.cutoff_spin.setSuffix(" Hz")
@@ -534,6 +413,8 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         inputs.addWidget(self._generate_button)
         self._input_actions = inputs
         lay.addLayout(inputs)
+        self._recording_tools = self.sidebar.create_recording_tools()
+        self._chart_tools_layout.addWidget(self._recording_tools)
         self._cutoff_timer = QTimer(self)
         self._cutoff_timer.setSingleShot(True)
         self._cutoff_timer.setInterval(250)
@@ -546,7 +427,6 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         self.statusBar().addPermanentWidget(self.annot_label)
         self.statusBar().addPermanentWidget(self.status_label)
         self._wire_data_selector_sync()
-        self._update_workspace_state()
 
     def _remember_library_choice(self):
         self._library_manually_set = True
@@ -556,19 +436,22 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         if not self._library_manually_set:
             self._library_toggle.setChecked(loaded)
             self._library_host.setVisible(loaded)
-        for action in getattr(self, '_data_actions', []):
+        for action in self._data_actions.values():
             action.setEnabled(loaded)
         self._generate_button.setEnabled(loaded)
+        self._recording_tools.setEnabled(loaded)
         self.select_data.setEnabled(loaded)
         if not loaded:
-            self.select_data.setText("Add a dataset to begin")
+            self.select_data.setPlaceholderText("Select a recording")
         self.select_data.setToolTip(self.select_data.currentText())
         empty = getattr(self, '_trend_empty', None)
         if empty is not None:
             empty.setVisible(not loaded)
             self.trendplot.setVisible(loaded)
-            self._trend_tools.setVisible(loaded)
-            self._shift_tools.setVisible(loaded and self._shift_disclosure.isChecked())
+            self._trend_tools.setEnabled(loaded)
+            self._shift_tools.setEnabled(loaded)
+            for action in self._peak_actions:
+                action.setEnabled(len(self.datalist) > 1)
 
     def _schedule_cutoff_change(self, _frequency: int) -> None:
         if hasattr(self, '_jobs') and self.datalist:
@@ -607,8 +490,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
     def _toggle_theme(self, checked: bool) -> None:
         """checked == True → dark mode."""
         new_mode = "dark" if checked else "light"
-        # Track which FluentIcon is shown so refresh_theme can re-render it.
-        self._theme_toggle_icon = FI.QUIET_HOURS if checked else FI.BRIGHTNESS
+
         theme_manager.set_mode(new_mode)
 
     def _toggle_analysis(self, checked: bool) -> None:
@@ -655,7 +537,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         group.setExclusive(True)
         for text, value in [("Raw", "Raw"), ("Filtered", "Filter"),
                             ("Calibrated", "Standard")]:
-            action = Action(text, self)
+            action = QAction(text, self)
             action.setCheckable(True)
             action.setChecked(self.plottype == value)
             action.triggered.connect(lambda checked=False, v=value: self.switch_plot_type(v))
@@ -663,51 +545,43 @@ class MainWindow(ProcessingController, WorkspaceWindow):
             tb.addAction(action)
             self._plot_type_actions[value] = action
         tb.addSeparator()
-        tools = tb.addAction('Signal tools')
-        tools.setToolTip('Peak alignment, annotation mode and time shift')
-        menu = QMenu(tb)
-        tools.setMenu(menu)
-        tb.widgetForAction(tools).setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        align = menu.addMenu('Align peaks')
-        for which in ('Max', 'Min'):
+        tb.addWidget(caption('ALIGN PEAKS'))
+        self._peak_actions = []
+        for which, callback in [('Max', self.switch_to_fitmax), ('Min', self.switch_to_fitmin)]:
             for axis, name in enumerate('XYZ', 1):
-                callback = self.switch_to_fitmax if which == 'Max' else self.switch_to_fitmin
-                align.addAction(f"{which} {name}", lambda checked=False, a=axis, cb=callback: cb(a))
-        annotate = Action(FI.TAG, "Annotate", self)
-        annotate.triggered.connect(self.switch_annot_mode)
-        menu.addAction(annotate)
-        tb.addSeparator()
-        _add_chart_toolbar(tb, self.trendplot)
+                action = tb.addAction(f'{which} {name}')
+                action.setToolTip(f'Align recordings at their {name}-axis {which.lower()}imum')
+                action.triggered.connect(lambda checked=False, a=axis, cb=callback: cb(a))
+                self._peak_actions.append(action)
 
         self._trend_tools = tb
         tb_shift = self._shift_tools = self._mk_toolbar("Time alignment")
-        self._shift_disclosure = menu.addAction('Time shift')
-        self._shift_disclosure.setCheckable(True)
-        self._shift_disclosure.toggled.connect(tb_shift.setVisible)
-        tb.hide()
-        tb_shift.hide()
-        tb_shift.addWidget(QLabel(" Shift "))
-        self._shift_combo = ComboBox()
-        self._shift_combo.setMinimumWidth(90)
-        self._shift_combo.setMaximumWidth(180)
+        tb_shift.addWidget(caption('TIME SHIFT'))
+        self._shift_combo = QComboBox()
+        self._shift_combo.setFixedWidth(165)
         self._shift_combo.setToolTip("Select a dataset to shift in time")
         tb_shift.addWidget(self._shift_combo)
-        self._shift_spin = DoubleSpinBox()
+        self._shift_spin = QDoubleSpinBox()
         self._shift_spin.setRange(-10000.0, 10000.0)
         self._shift_spin.setDecimals(3)
         self._shift_spin.setSingleStep(0.001)
         self._shift_spin.setSuffix(" s")
-        self._shift_spin.setFixedWidth(140)
+        self._shift_spin.setFixedWidth(112)
         self._shift_spin.setToolTip("Display shift in seconds; positive moves the trace earlier")
         tb_shift.addWidget(self._shift_spin)
-        self._shift_apply = PushButton("Apply")
+        self._shift_apply = QPushButton("Apply")
         self._shift_apply.clicked.connect(self._apply_manual_shift)
         tb_shift.addWidget(self._shift_apply)
-        self._shift_reset = PushButton("Reset")
+        self._shift_reset = QPushButton("Reset shift")
         self._shift_reset.clicked.connect(self._reset_manual_shift)
         tb_shift.addWidget(self._shift_reset)
+        tb_shift.addSeparator()
+        annotate = icon_action('tag', "Annotate", self)
+        annotate.triggered.connect(self.switch_annot_mode)
+        tb_shift.addAction(annotate)
+        _add_chart_toolbar(tb_shift, self.trendplot)
 
-        self._analyze_window_spin = DoubleSpinBox(self._ctrl_panel)
+        self._analyze_window_spin = QDoubleSpinBox(self._ctrl_panel)
         self._analyze_window_spin.setRange(0.001, 60.0)
         self._analyze_window_spin.setDecimals(3)
         self._analyze_window_spin.setSingleStep(0.1)
@@ -723,29 +597,26 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         self._trend_empty = QFrame()
         self._trend_empty.setObjectName("emptyState")
         empty_layout = QVBoxLayout(self._trend_empty)
-        empty_layout.setContentsMargins(22, 22, 22, 22)
-        empty_layout.setSpacing(8)
-        empty_layout.addWidget(AtlasPlate(), 2)
-        empty_layout.addSpacing(12)
-        eyebrow = caption('GETTING STARTED')
-        title = caption('Open your first recording', 'emptyTitle')
-        hint = caption('Import a recording to inspect its three axes, compare runs and generate a report.', 'secondaryText')
-        hint.setWordWrap(True)
-        add = self._import_button("Import recording")
-        add.setObjectName("emptyImportButton")
-        add.setIcon(FI.FOLDER_ADD.icon(theme=qfw.Theme.LIGHT))
-        empty_layout.addWidget(eyebrow)
-        empty_layout.addWidget(title)
-        empty_layout.addWidget(hint)
-        empty_layout.addSpacing(12)
-        empty_layout.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
-        empty_layout.addStretch(1)
-        empty_layout.addWidget(caption('SUPPORTED INPUTS     /     DAQ    ·    ACCELERATION / SUP    ·    SENSORCONNECT', 'formatKey'))
+        empty_layout.setContentsMargins(24, 16, 24, 16)
+        empty_layout.addStretch()
+        chooser = QWidget()
+        chooser.setMaximumWidth(530)
+        chooser_layout = QVBoxLayout(chooser)
+        chooser_layout.setContentsMargins(0, 0, 0, 0)
+        chooser_layout.setSpacing(10)
+        chooser_layout.addWidget(caption('Open a recording', 'emptyTitle'))
+        chooser_layout.addWidget(caption('Choose a format in the Import row above to plot your signals.', 'secondaryText'))
+        chooser_row = QHBoxLayout()
+        chooser_row.addStretch(1)
+        chooser_row.addWidget(chooser, 4)
+        chooser_row.addStretch(1)
+        empty_layout.addLayout(chooser_row)
+        empty_layout.addStretch()
         content_layout.addWidget(self._trend_empty, 1)
         content_layout.addWidget(self.trendplot, 1)
         self.trendplot.hide()
         page = self._make_page("page_trend", [tb, tb_shift], content)
-        self._add_chart_page(page, NavIcon.TREND, "Trend")
+        self._add_chart_page(page, 'activity', "Trend")
 
     # ------------------------------------------------------------------
     # Pages 3 & 4: ASTM F2291
@@ -769,7 +640,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         tb2.addWidget(self._sust_summary_host)
 
         page = self._make_page("page_astm_sust", [tb2], self.canvasASTMSust)
-        self._add_chart_page(page, NavIcon.SUST, "ASTM Sustained")
+        self._add_chart_page(page, 'chart-line', "ASTM Sustained")
 
     def _setup_astm_egg_page(self) -> None:
         """Eggplot page — chart tools + analysis summary.
@@ -789,7 +660,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         tb2.addWidget(self._egg_summary_host)
 
         page = self._make_page("page_astm_egg", [tb2], self.canvasASTMEgg)
-        self._add_chart_page(page, NavIcon.EGG, "ASTM Eggplot")
+        self._add_chart_page(page, 'circles-three', "ASTM Eggplot")
 
     def _build_control_panel(self) -> None:
         """Populate the shared control panel under the nav tabs.
@@ -808,7 +679,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
 
         # --- Restraint type ---
         lay.addWidget(QLabel("Restraint:"))
-        self.select_restraint = ComboBox()
+        self.select_restraint = QComboBox()
         self.select_restraint.addItems([
             'None', 'Individual Lower Body', 'Upper Body',
             'Group Lower Body', 'Convenience Restraint', 'No Restraint',
@@ -817,13 +688,18 @@ class MainWindow(ProcessingController, WorkspaceWindow):
 
         # --- Condition ---
         lay.addWidget(QLabel("Condition:"))
-        self.select_cond = ComboBox()
+        self.select_cond = QComboBox()
         self.select_cond.addItems(['Normal', 'E-Stop', 'Expected/Permitted Bumping'])
+        for combo in (self.select_restraint, self.select_cond):
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(9)
+            combo.setToolTip(combo.currentText())
+            combo.currentTextChanged.connect(combo.setToolTip)
         lay.addWidget(self.select_cond)
 
         # --- Height (inches) ---
         lay.addWidget(QLabel("Height (in):"))
-        self.height_input = SpinBox()
+        self.height_input = QSpinBox()
         self.height_input.setRange(0, 80)
         self.height_input.setValue(0)
         lay.addWidget(self.height_input)
@@ -832,8 +708,9 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         # Toggling prone re-plots every chart immediately (it changes the ASTM
         # egg shapes + the sustained ax- limit line), so the user sees the
         # update without needing to click Generate.
-        self._prone_btn = ToggleToolButton(self._ctrl_panel)
+        self._prone_btn = QToolButton(self._ctrl_panel)
         self._prone_btn.setText("Prone")
+        self._prone_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._prone_btn.setCheckable(True)
         self._prone_btn.setStatusTip(
             "Prone posture: swap XY/XZ base eggs to the prone shape + "
@@ -846,8 +723,9 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         lay.addSpacing(6)
 
         # --- Shared Analyze button (routes to the visible page's handler) ---
-        self._analyze_btn = ToggleToolButton(self._ctrl_panel)
+        self._analyze_btn = QToolButton(self._ctrl_panel)
         self._analyze_btn.setText("Analyze")
+        self._analyze_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self._analyze_btn.setCheckable(True)
         self._analyze_btn.setStatusTip(
             "Analyze the currently-visible chart (switch tabs to analyze another)")
@@ -989,7 +867,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         self._refresh_egg_summary()
 
     def _on_prone_toggled(self, _checked: bool) -> None:
-        self._queue_chart_refresh()
+        self._queue_limit_refresh()
 
     def _plot_error(self, context: str, error: Exception) -> None:
         message = f"{context}: {error}"
@@ -1140,7 +1018,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         tb2.addWidget(self._gb_summary_host)
 
         page = self._make_page("page_gb", [tb2], self.canvasGB)
-        self._add_chart_page(page, NavIcon.GB, "GB Contour")
+        self._add_chart_page(page, 'intersect', "GB Contour")
 
     def _toggle_gb_analysis(self, checked: bool) -> None:
         """Toggle GB combined-chart analysis + refresh the toolbar summary."""
@@ -1238,7 +1116,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         tb2.addWidget(self._acczone_hint)
 
         page = self._make_page("page_acczone", [tb, tb2], self.canvasAccZone)
-        self._add_chart_page(page, NavIcon.ACC_ZONE, "Acc Zone")
+        self._add_chart_page(page, 'squares-four', "Acc Zone")
         # Seed the readout now that the widget exists.
         self._update_status_label()
 
@@ -1274,7 +1152,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         tb = self._mk_toolbar("Z Reversal Controls")
 
         tb.addWidget(QLabel(" Type: "))
-        self._zr_plottype = ComboBox()
+        self._zr_plottype = QComboBox()
         self._zr_plottype.addItems(["Raw", "Filter", "Standard"])
         self._zr_plottype.setCurrentText("Standard")
         self._zr_plottype.setMinimumWidth(110)
@@ -1293,7 +1171,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         tb2.addWidget(self._zr_summary_host)
 
         page = self._make_page("page_zreversal", [tb, tb2], self.canvasZReversal)
-        self._add_chart_page(page, NavIcon.Z_REVERSAL, "Z Reversal")
+        self._add_chart_page(page, 'arrows-down-up', "Z Reversal")
 
     def _setup_xyreversal_page(self) -> None:
         """X/Y-axis reversal analysis page (two stacked charts).
@@ -1309,7 +1187,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         # ---- Row 1: data selection + detection controls + Generate ----
         tb = self._mk_toolbar("X/Y Reversal Controls")
         tb.addWidget(QLabel(" Type: "))
-        self._xr_plottype = ComboBox()
+        self._xr_plottype = QComboBox()
         self._xr_plottype.addItems(["Raw", "Filter", "Standard"])
         self._xr_plottype.setCurrentText("Standard")
         self._xr_plottype.setMinimumWidth(110)
@@ -1322,7 +1200,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         # change — a macro single-crossing with a small blip still counts as ONE
         # reversal. 0 disables hysteresis (plain-sign behaviour).
         tb.addWidget(QLabel(" Hysteresis(g): "))
-        self._xr_hyst = DoubleSpinBox()
+        self._xr_hyst = QDoubleSpinBox()
         self._xr_hyst.setRange(0.0, 2.0)
         self._xr_hyst.setDecimals(3)
         self._xr_hyst.setSingleStep(0.01)
@@ -1351,7 +1229,7 @@ class MainWindow(ProcessingController, WorkspaceWindow):
 
         page = self._make_page("page_xyreversal", [tb, tb2],
                                self.canvasXYReversal)
-        self._add_chart_page(page, NavIcon.XY_REVERSAL, "X/Y Reversal")
+        self._add_chart_page(page, 'arrows-left-right', "X/Y Reversal")
 
     # -- generate / analyze handlers ------------------------------------
 
@@ -2011,14 +1889,6 @@ class MainWindow(ProcessingController, WorkspaceWindow):
         if filenames:
             self._last_open_dir = os.path.dirname(filenames[0])
             self._start_import(filenames, raw=True)
-
-    def open_legacy_sensorconnect_data(self) -> None:
-        filenames, _ = QFileDialog.getOpenFileNames(
-            self, 'Open legacy SensorConnect exports — known 512 Hz recordings',
-            self._last_open_dir, 'SensorConnect SUP exports (*.sup *.sups)')
-        if filenames:
-            self._last_open_dir = os.path.dirname(filenames[0])
-            self._start_import(filenames, raw='sensorconnect_sup')
 
     def open_sensorconnect_data(self) -> None:
         """SensorConnect 软件导出的单传感器 CSV（Time + 三通道 X/Y/Z）。

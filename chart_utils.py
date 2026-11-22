@@ -40,6 +40,7 @@ def create_line_series(
     width: float = LINE_WIDTH_DEFAULT,
     dash: bool = False,
     points_visible: bool = False,
+    display_lod: bool = False,
 ) -> QLineSeries:
     """Create a styled QLineSeries from x/y data.
 
@@ -57,8 +58,14 @@ def create_line_series(
         If True, use a dashed line style.
     points_visible : bool
         Show individual data-point markers.
+    display_lod : bool
+        Draw a peak-preserving visible envelope for long time-series data.
     """
-    series = QLineSeries()
+    if display_lod:
+        from chart_display import DisplayLineSeries
+        series = DisplayLineSeries()
+    else:
+        series = QLineSeries()
     series.setName(name)
     series.setPointsVisible(points_visible)
 
@@ -108,7 +115,7 @@ def create_line_series(
     # 27000-point × 3-axis line scrolls ~5× faster under GL).
     try:
         from PySide6.QtGui import QGuiApplication
-        if len(x_data) >= 2000 and QGuiApplication.platformName() != "offscreen":
+        if not display_lod and len(x_data) >= 2000 and QGuiApplication.platformName() != "offscreen":
             series.setUseOpenGL(True)
     except Exception:
         pass
@@ -146,6 +153,25 @@ def add_series_with_axes(
     chart.addSeries(series)
     series.attachAxis(axis_x)
     series.attachAxis(axis_y)
+
+
+def add_trajectory(chart, horizontal_axis, vertical_axis, horizontal, vertical,
+                   color, name, width):
+    import numpy as np
+    from chart_display import TrajectorySeries
+
+    if len(horizontal) > 12000 and np.isfinite(horizontal).all() and np.isfinite(vertical).all():
+        series = TrajectorySeries(horizontal, vertical)
+        series.setPen(QPen(QColor(color), width))
+        series.setName(name)
+        series.setPointsVisible(True)
+        add_series_with_axes(chart, series, horizontal_axis, vertical_axis)
+        series.bind_resolution(chart, horizontal_axis, vertical_axis)
+    else:
+        series = create_line_series(horizontal, vertical, color=color, name=name,
+                                    width=width, points_visible=True)
+        add_series_with_axes(chart, series, horizontal_axis, vertical_axis)
+    return series
 
 
 # ---------------------------------------------------------------------------

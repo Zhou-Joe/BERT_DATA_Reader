@@ -7,7 +7,7 @@ import pandas as pd
 from accdata import AccData
 from analysis_pipeline import AnalysisRequest, classify_zone, prepare_analysis, snapshot
 from background import Cancelled, CancellationToken
-from sci_calculation import ProcessASTM, ProcessGB, sampling_frequency
+from sci_calculation import ProcessASTM, ProcessGB, sampling_frequency, sustained_peak_windows
 from test_data import recording
 
 
@@ -38,16 +38,24 @@ class PipelineTests(unittest.TestCase):
     def test_noninteger_acquisition_rate_keeps_timestamp_based_window_sizes(self):
         data = AccData(recording(fs=333.5, seconds=15), is_raw=True, path='a.sup')
         request = self.request(data)
-        with patch('analysis_pipeline.ProcessASTM', wraps=ProcessASTM) as process:
-            result = prepare_analysis(request, CancellationToken(), lambda *args: None)
+        result = prepare_analysis(request, CancellationToken(), lambda *args: None)
         expected = round(sampling_frequency(result['frame']) * 14)
-        self.assertIn(expected, [call.args[1] for call in process.call_args_list])
+        self.assertEqual(result['astm'][14], ProcessASTM(result['frame'], expected))
+
+    def test_shared_windows_match_rolling_reference_with_gaps_and_short_inputs(self):
+        samples = np.random.default_rng(123).normal(size=(251, 4))
+        samples[::43, 1] = np.nan
+        samples[33, 2] = np.inf
+        samples[:, 3] += 1
+        frame = pd.DataFrame(samples)
+        for width, extrema in sustained_peak_windows(frame, [250, 1, 2, 3, 7, 16, 63, 251, 252]):
+            self.assertEqual(extrema, ProcessASTM(frame, width), width)
 
     def test_cancelled_request_stops_before_calculating(self):
         data = AccData(recording(), is_raw=True, path='a.sup')
         token = CancellationToken()
         token.cancel()
-        with patch('analysis_pipeline.ProcessASTM') as process, self.assertRaises(Cancelled):
+        with patch('analysis_pipeline.sustained_peak_windows') as process, self.assertRaises(Cancelled):
             prepare_analysis(self.request(data), token, lambda *args: None)
         process.assert_not_called()
 

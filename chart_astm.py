@@ -22,6 +22,7 @@ from chart_base import BaseChartView, PanChartView, INTERACTION_ZOOM, INTERACTIO
 from chart_utils import (
     numpy_to_qpointsf,
     create_line_series,
+    add_trajectory,
     add_series_with_axes,
     clear_chart,
     equalize_xy_axes,
@@ -524,13 +525,16 @@ class ASTMChartView(QWidget):
             return None
         chart = self._charts[chart_name]
         axes = self._axes[chart_name]
-        s = create_line_series(x_data, y_data, color=color, name=name,
-                                width=LINE_WIDTH_FITTING,
-                                dash=name.lower().endswith(("(-)", "(left)", "(up)")),
-                                points_visible=points)
-        chart.addSeries(s)
-        s.attachAxis(axes["x"])
-        s.attachAxis(axes["y"])
+        if points:
+            s = add_trajectory(chart, axes["x"], axes["y"], x_data, y_data,
+                               color, name, LINE_WIDTH_FITTING)
+        else:
+            s = create_line_series(x_data, y_data, color=color, name=name,
+                                   width=LINE_WIDTH_FITTING,
+                                   dash=name.lower().endswith(("(-)", "(left)", "(up)")))
+            chart.addSeries(s)
+            s.attachAxis(axes["x"])
+            s.attachAxis(axes["y"])
         self._data_series.append(s)
         s.clicked.connect(lambda pt: self._on_click(pt, chart_name))
         return s
@@ -595,6 +599,7 @@ class ASTMChartView(QWidget):
         for s in self._data_series:
             try:
                 s.chart().removeSeries(s)
+                s.deleteLater()
             except Exception:
                 pass
         self._data_series.clear()
@@ -735,8 +740,7 @@ class ASTMChartView(QWidget):
         marker.setBorderColor(QColor("white"))
         if use_triangle:
             marker.setMarkerShape(QScatterSeries.MarkerShape.MarkerShapeTriangle)
-        for x, y in pts:
-            marker.append(QPointF(float(x), float(y)))
+        marker.replaceNp(np.ascontiguousarray(pts[:, 0]), np.ascontiguousarray(pts[:, 1]))
         chart.addSeries(marker)
         marker.attachAxis(self._axes[chart_name]["x"])
         marker.attachAxis(self._axes[chart_name]["y"])
@@ -1069,6 +1073,7 @@ class ASTMChartView(QWidget):
                     continue
                 rule = f"{axis} ({'+' if side == 'pos' else '−'})"
                 self.sust_failed_rules.add(rule)
+                self.sust_exceedances.append(dict(rule=rule, duration_s=dt, measured_g=val, limit_g=limit))
                 self._draw_sust_marker(chart, axis, dt, val, limit, side)
 
     def _draw_sust_marker(self, chart: QChart, axis_name: str,
@@ -1115,6 +1120,7 @@ class ASTMChartView(QWidget):
                 pass
         self._sust_analysis_refs = []
         self.sust_failed_rules = set()
+        self.sust_exceedances = []
 
     # ------------------------------------------------------------------
     # Annotations

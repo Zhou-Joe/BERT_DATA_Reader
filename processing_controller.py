@@ -47,10 +47,11 @@ class ProcessingController:
         self.statusBar().addPermanentWidget(self._job_progress)
         self.statusBar().addPermanentWidget(self._cancel_job)
         self.select_data.currentTextChanged.connect(self._queue_chart_refresh)
-        for combo in (self.select_restraint, self.select_cond,
-                      self._zr_plottype, self._xr_plottype):
+        for combo in (self._zr_plottype, self._xr_plottype):
             combo.currentTextChanged.connect(self._queue_chart_refresh)
-        self.height_input.valueChanged.connect(self._queue_chart_refresh)
+        for combo in (self.select_restraint, self.select_cond):
+            combo.currentTextChanged.connect(self._queue_limit_refresh)
+        self.height_input.valueChanged.connect(self._queue_limit_refresh)
         self.height_input.setKeyboardTracking(False)
         self._xr_hyst.valueChanged.connect(self._queue_chart_refresh)
         self._xr_hyst.setKeyboardTracking(False)
@@ -65,10 +66,26 @@ class ProcessingController:
                          data.offset_x, data.offset_y, data.offset_z)
                         for data in self.datalist)
         return (sources, self.select_data.currentText(), self.cutoff_spin.value(),
-                self.plottype, self.select_restraint.currentText(),
-                self.select_cond.currentText(), self.height_input.value(),
-                self._prone_btn.isChecked(), self._zr_plottype.currentText(),
+                self.plottype, self._zr_plottype.currentText(),
                 self._xr_plottype.currentText(), self._xr_hyst.value())
+
+    def _queue_limit_refresh(self, *_args):
+        if (not hasattr(self, '_jobs') or self._closing or self._refresh_suspended
+                or self._import_commit is not None or not self.datalist):
+            return
+        if not self._prepared:
+            if not self._jobs.busy('analysis'):
+                self._queue_chart_refresh()
+            return
+        for canvas, summary in ((self.canvasASTMSust, self._sust_summary_host),
+                                (self.canvasASTMEgg, self._egg_summary_host),
+                                (self.canvasXYReversal, self._xr_summary_host)):
+            page = canvas.parentWidget()
+            self._rendered_keys.pop(page.objectName(), None)
+            self._show_pending_page(page, 'Updating limits…')
+            summary.hide()
+        self._analyze_btn.setEnabled(self._page_is_current())
+        QTimer.singleShot(0, self._render_current_chart)
 
     def _page_is_current(self, page=None):
         page = page or self.stackedWidget.currentWidget()
@@ -407,7 +424,7 @@ class ProcessingController:
             self._update_job_controls()
 
     def _finish_import_batch(self, state):
-        from qfluentwidgets import InfoBar
+        from ui_controls import warning
         result = state['result']
         self._import_commit = None
         summary = (f'Imported {state["completed"]}/{result.total} files; '
@@ -418,8 +435,8 @@ class ProcessingController:
                                 for path, error in result.errors[:3])
             if len(result.errors) > 3:
                 visible += f'\n{len(result.errors) - 3} more failure(s). Hover for details.'
-            notice = InfoBar.warning(title=summary, content=visible, duration=10000,
-                                     isClosable=True, parent=self)
+            notice = warning(title=summary, content=visible, duration=10000,
+                                     parent=self)
             notice.setToolTip(details)
         if state['completed']:
             self._pending_import_notice = summary

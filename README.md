@@ -17,7 +17,11 @@ export and a Word failure report.
 
 ## Features
 
-- **7 analysis tabs** (custom SVG icons per tab):
+The desktop workspace uses React 19 and Radix Themes. Navigation, import, and
+analysis controls run from local assets in Qt WebEngine. Qt Charts handles the
+interactive scientific plots, and Python processes recordings on the desktop.
+
+- **Seven analysis views** are always visible in the sidebar:
   - **Trend** — X/Y/Z time-history for all loaded datasets, synced zoom.
   - **ASTM Sustained** — 17-duration sustained-peak window analysis with
     pass/fail limit overlays (restraint / condition / height / prone aware).
@@ -53,14 +57,14 @@ export and a Word failure report.
 |-------------------------|----------------------|
 | Python                  | 3.13 (3.11+ works)   |
 | PySide6                 | 6.11.1               |
-| PySide6-Fluent-Widgets  | 1.11.2 (`qfluentwidgets`) |
+| QtAwesome               | 1.4.2 (Phosphor icons) |
 | pandas                  | **2.3.x** (do NOT use 3.x — see *Known issue* below) |
 | numpy                   | 2.5.x                |
 | scipy                   | 1.18.x               |
 | matplotlib              | 3.11.x (only `matplotlib.path` is used) |
 | python-docx             | (latest)             |
 
-> **Windows 10/11** is the primary platform. Qt Charts + Fluent Widgets run on
+> **Windows 10/11** is the primary platform. Qt Charts and native Qt Widgets run on
 > macOS/Linux too, but the packaged `.exe` is Windows x64.
 
 ---
@@ -85,12 +89,16 @@ source .venv/bin/activate
 
 # 4. Install dependencies
 #    From PyPI (default):
-uv pip install PySide6 "PySide6-Fluent-Widgets" "pandas<3" numpy scipy matplotlib python-docx pyinstaller
+uv pip install PySide6 "QtAwesome>=1.4,<2" "pandas<3" numpy scipy matplotlib python-docx pyinstaller
 #    Or with the Aliyun mirror (faster inside the Disney network / China):
-uv pip install PySide6 "PySide6-Fluent-Widgets" "pandas<3" numpy scipy matplotlib python-docx pyinstaller \
+uv pip install PySide6 "QtAwesome>=1.4,<2" "pandas<3" numpy scipy matplotlib python-docx pyinstaller \
     -i https://mirrors.aliyun.com/pypi/simple/
 
-# 5. Run
+# 5. Build the desktop UI (Node.js 22+)
+npm --prefix frontend ci
+npm --prefix frontend run build
+
+# 6. Run
 python main.py
 ```
 
@@ -102,6 +110,59 @@ in the folder where the `.exe` lives.
 
 ---
 
+## Use BERT from an AI agent
+
+`bert_mcp.py` is a local stdio MCP server. Each client connection starts with
+an empty recording library and its own analysis settings. Import files by
+absolute path. Edits apply to that session's copies. Export the results you
+want to keep before disconnecting.
+
+After installing the Python application dependencies, install the MCP dependency
+in the same environment:
+
+```powershell
+python -m pip install -r requirements-mcp.txt
+```
+
+For Codex, run this from the application directory with that environment active:
+
+```powershell
+$bertPython = python -c "import sys; print(sys.executable)"
+$bertServer = (Resolve-Path .\bert_mcp.py).Path
+codex mcp add bert-signal-lab -- $bertPython $bertServer
+```
+
+For another stdio MCP client, use the same Python executable as its `command`
+and the absolute path to `bert_mcp.py` as its sole argument. The agent can run
+the analysis with the desktop application closed.
+
+| Task | Tools |
+| --- | --- |
+| Import and inspect | `import_recordings` (`daq`, `sup`, or `sensorconnect`), `list_recordings`, `read_samples`, `signal_statistics` |
+| Edit signals | `edit_axes`, `set_orientation`, `trim_recording`, `detect_segments`, `split_recording`, `remove_recordings` |
+| Compare and plot | `configure_analysis`, `compare_standards`, `align_peaks`, `set_trace`, `render_chart` |
+| Export | `export_recording` (SUP or TSV), `export_all` (SUP batch), `export_word_report` |
+
+Use the IDs returned by import for subsequent calls. A DAQ file can return
+both a GB and an ASTM channel group. The comparison tool evaluates each
+selected recording against the app's built-in checks and returns its settings,
+check names, findings and verdicts. `sust` and `egg` select the ASTM F2291
+checks, `gb` selects GB 8408, `acczone` classifies acceleration zones, and
+`zr` and `xr` select the reversal checks. `render_chart` returns a PNG for
+any of these views or the multi-recording trend.
+
+For example, ask your agent:
+
+> Import the DAQ file at the absolute path I supplied. List the two recording
+> IDs, use calibrated data at 5 Hz, and compare both against ASTM sustained
+> acceleration and GB 8408 with Upper Body restraint, Normal condition, and
+> a 60-inch height. Show me the failing checks and the corresponding plots.
+
+Time windows use seconds and exclude their end. A trim rebases the selected
+interval to its requested start. Peak alignment and time shifts affect the
+trend display. Exports require a new destination. The Word report uses the
+same evaluation routines as the comparison tool.
+
 ## Building a Windows `.exe` (one-file PyInstaller)
 
 A ready-to-use spec is included:
@@ -111,10 +172,10 @@ A ready-to-use spec is included:
 pyinstaller --noconfirm --clean build.spec
 ```
 
-The output is `dist/BERT_READER_X.exe` (≈ 315 MB, GUI subsystem — **no console
-window** on launch). The spec already:
+The output is `dist/BERT_READER_X.exe`. Build the frontend before packaging.
+The spec includes the React workspace, local fonts, and Qt WebEngine runtime. It also:
 
-- bundles `qfluentwidgets`, `PySide6`, `python-docx` data files + hidden imports,
+- bundles `qtawesome` icon fonts, `PySide6`, `python-docx` data files + hidden imports,
 - excludes unused matplotlib GUI backends (only `matplotlib.path` is kept),
 - embeds `icon.ico` and ships `icon.svg` for the window icon.
 
@@ -132,10 +193,9 @@ python gen_icon.py     # writes icon.ico + icon_preview.png from icon.svg
 
 | Action           | Accepts                                                |
 |------------------|--------------------------------------------------------|
-| **Import → Acceleration recording / SUP** | `.sup` (SARC tab-separated, the native format) |
-| **Import → Raw DAQ recording** | `.csv` / `.txt` from a DAQ export (multi-channel) |
-| **Import → SensorConnect CSV** | SensorConnect accelerometer CSV with timestamps |
-| **Import → Legacy SensorConnect SUP (512 Hz)** | Older SUP exports known to originate at 512 Hz |
+| **Acceleration recording / SUP** | `.sup` (SARC tab-separated, the native format) |
+| **Raw DAQ recording** | `.csv` / `.txt` from a DAQ export (multi-channel) |
+| **SensorConnect CSV** | SensorConnect accelerometer CSV with timestamps |
 
 > The CSV reader auto-detects the header length and maps channels by label
 > (`ASTM_X/Y/Z`, `GB_X/Y/Z`) — it no longer hardcodes a 23-row skip. GB / ASTM
@@ -154,8 +214,8 @@ still pending.
 
 ### 2. Configure the analysis
 
-Open **Analysis settings** at the foot of the navigation rail. **Analysis views**
-returns to the chart list without resetting the parameters or selected recording.
+The seven analysis views stay visible in the left navigation rail. Analysis
+settings sit directly below them and scroll independently on smaller screens.
 
 - **Restraint Type** — affects the limit overlays (None / Convenience / …).
 - **Condition** — test condition class.
@@ -174,22 +234,29 @@ returns to the chart list without resetting the parameters or selected recording
 - **Progress / Cancel** — import and numerical work run in the background.
   Cancel stops applying unfinished work; use Update charts to retry.
 - **Cutoff** (Hz) — live low-pass filter cutoff (SpinBox, no modal dialog).
-- **More → Export all** — writes every loaded dataset to `.sup` in a chosen folder.
+- **Export all** — writes every loaded dataset to `.sup` in a chosen folder.
+- **Recording tools** — select a recording to trim or split it, edit orientation or
+  axis values, change its colour, export it, or remove it from the workspace.
+  These buttons remain accessible when the library is closed.
 
 ### 4. Per-chart interaction
 
 - **Zoom / Pan / Reset View** toolbars on each chart.
-- **Trend → Signal tools** — align peaks, change annotation mode, or reveal the manual time-shift controls.
+- **Long recordings** — Trend and Reversal draw a peak-preserving envelope at
+  the current display resolution. Zooming in restores the original samples;
+  numerical analysis and recording exports always use the full recording.
+- **Trend** — use the six **Align peaks** buttons to align two or more recordings
+  by the maximum or minimum on each axis. Use **Time shift** for a manual
+  offset or **Annotate** to change annotation mode.
 - **Click a data point** on the Acc Zone chart to read its time + acceleration.
 - **Recording library** — search imported files, click a row to select it, and
   toggle visibility using the eye. Click the coloured square beside a recording
   to choose its trace colour across all charts and Word reports. Negative
-  sustained curves use a dashed line. Each row's menu offers trimming, orientation,
-  axis edits, colour selection, export and removal. The selected signal's
+  sustained curves use a dashed line. The selected signal's
   statistics appear in a separate inspector; drag the divider to resize it.
 - **Library** — hide the recordings panel for a wider chart. Press **Ctrl+F**
   to reopen it and search without changing the active recording.
-- **Trim / split** — select a recording and open the inspector action. Choose
+- **Trim / split** — select a recording and click **Trim / split**. Choose
   **Auto-detect** to see suggested windows over the acceleration trace.
   Shading marks the time ranges to keep. Adjust the start or exclusive end,
   or uncheck a segment to omit it. A longer **Quiet gap** treats longer pauses
@@ -236,7 +303,7 @@ BERT_READER/
 ├── segment_preview.py      # trim timeline and sample-accurate time controls
 ├── report_document.py      # Word layout, results tables and figure captions
 ├── theme.py                # token system, app palette/QSS, theme switching
-├── nav_icons.py            # custom SVG nav-tab icons
+├── ui_controls.py          # shared Qt controls and Phosphor icons
 ├── boundary_analysis.py    # boundary-violation helpers
 ├── models.py               # data model shims
 ├── icon.svg / icon.ico     # app icon (vector + multi-resolution)
@@ -263,15 +330,6 @@ Internal tooling — © Disney / SARC test engineering. Not for redistribution.
 
 
 ## Development checks
-
-For existing SUP files exported from **512 Hz SensorConnect** recordings, use
-the recording sidebar's **+ Import → Legacy SensorConnect exports (512 Hz)**.
-Select multiple existing exports to keep their saved trims and samples while
-recalculating filters and analysis at 512 Hz. **Export all** to a separate folder
-to save copies with sampling-rate metadata; those copies can subsequently use
-the normal acceleration-data importer. This does not restore samples discarded
-by older importers or re-check the original auto-detected trim boundaries.
-Use this option only for recordings known to originate at 512 Hz.
 
 Run the numerical and headless Qt regression suite from the repository root:
 

@@ -1,47 +1,11 @@
 # coding: utf-8
-"""
-BERT Reader Theme — QFluentWidgets bridge.
-
-This module used to be a hand-rolled Fluent design system (a 1200-line token
-dict + a giant QSS string + a fake glassmorphism ``GlowBackground``). It has
-been rewritten as a thin adapter over the ``qfluentwidgets`` library, which now
-owns all widget styling and light/dark switching.
-
-Two things survive for backward compatibility:
-
-1.  **Constants** — ``DATASET_COLORS``, ``FONT_*``, ``FONT_FAMILY``,
-    ``LINE_WIDTH_DEFAULT``, ``SIDEBAR_MIN_WIDTH`` and the legacy color aliases.
-2.  **The token dict + chart helpers** — ``theme_manager.tokens``,
-    ``apply_chart_theme()`` and ``chart_tooltip_style()`` are kept because the
-    Qt Charts layer (``chart_*.py``) cannot be themed by qfluentwidgets (Qt
-    Charts live on a ``QGraphicsScene`` and ignore QSS). The token values are
-    now *derived* from qfluentwidgets' current theme (``isDarkTheme()``,
-    ``themeColor()``, ``FluentSystemColor``) so the charts stay in sync with
-    the rest of the UI automatically.
-
-The old inline-style factories (``card_*_style``, ``status_pill_style``,
-``swatch_button_style``, ``svg_icon``) are kept as thin shims so existing
-callers keep importing, but the UI migration replaces them with real Fluent
-widgets — they will be removed once sidebar.py / main_window.py no longer
-reference them.
-"""
+"""Shared Qt palette, widget styles and analytical chart colours."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QWidget
 
-import qfluentwidgets as qfw
-from qfluentwidgets import (
-    Theme,
-    isDarkTheme,
-    qconfig,
-    setTheme,
-    setThemeColor,
-    themeColor,
-)
-from qfluentwidgets.common import FluentSystemColor as _SC
 
 # ---------------------------------------------------------------------------
 # 19-colour dataset palette (kept identical to the original)
@@ -54,7 +18,7 @@ DATASET_COLORS = [
 ]
 
 # Backwards-compatible aliases (a few modules import these names)
-PRIMARY = "#146C59"
+PRIMARY = "#226746"
 PRIMARY_HOVER = "#105A4A"
 PRIMARY_PRESSED = "#0C4539"
 DANGER = "#C42B1C"
@@ -91,19 +55,8 @@ _RADIUS_PILL = "999px"
 
 
 # ---------------------------------------------------------------------------
-# Token derivation — build the legacy token dict from qfluentwidgets' theme.
-#
-# Charts can't read QSS, so they still read ``theme_manager.tokens["..."]``.
-# We reconstruct the same keys the chart/inline helpers expect, sourcing the
-# values from qfluentwidgets so they track the real Fluent theme. The exact
-# hex values differ slightly from the old hand-picked palette, but the keys
-# and semantics are identical.
+# Theme tokens shared by widgets, charts and per-recording styles.
 # ---------------------------------------------------------------------------
-
-def _pair(sc: _SC) -> tuple[str, str]:
-    """Return ``(light_hex, dark_hex)`` for a FluentSystemColor."""
-    return sc.value
-
 
 def _darken(hex_color: str, factor: float) -> str:
     """Multiply an ``#RRGGBB`` colour's channels by ``factor``."""
@@ -134,41 +87,35 @@ def _with_alpha(hex_color: str, alpha: float) -> str:
 
 
 def _build_tokens(dark: bool) -> dict:
-    """Reconstruct the legacy token dict from the current Fluent theme.
-
-    ``dark`` selects which side of every (light, dark) pair to use. Accent
-    colours come from qfluentwidgets' live ``themeColor()`` so a custom
-    accent propagates everywhere, including the charts.
-    """
-    accent = QColor(themeColor()).name()  # e.g. "#009faa"
+    accent = "#93dab5" if dark else PRIMARY
     accent_hover = _darken(accent, 0.88) if not dark else _lighten(accent, 0.18)
     accent_pressed = _darken(accent, 0.76) if not dark else _lighten(accent, 0.32)
     accent_disabled = _lighten(accent, 0.55) if not dark else _darken(accent, 0.5)
 
-    caut_fg_pair = _pair(_SC.CAUTION_FOREGROUND)
-    crit_fg_pair = _pair(_SC.CRITICAL_FOREGROUND)
-    caut_bg_pair = _pair(_SC.CAUTION_BACKGROUND)
-    crit_bg_pair = _pair(_SC.CRITICAL_BACKGROUND)
+    caut_fg_pair = ('#795014', '#F5C972')
+    crit_fg_pair = ('#A33240', '#FFABB3')
+    caut_bg_pair = ('#FFF1D4', '#4C3820')
+    crit_bg_pair = ('#FDE8EC', '#4B2A32')
     idx = 1 if dark else 0
 
     if dark:
         tk = {
             "mode": "dark",
             # chrome
-            "window_bg": "#13201E",
-            "bg": "#13201E",
-            "surface": "#1B2A27",
-            "surface_alt": "#22342F",
-            "surface_hover": "#30463F",
+            "window_bg": "#17201d",
+            "bg": "#17201d",
+            "surface": "#202c27",
+            "surface_alt": "#24312b",
+            "surface_hover": "#304137",
             "surface_pressed": "#3C524B",
             # text
-            "text": "#ECF2EB",
-            "text_secondary": "#ACC0B7",
+            "text": "#eef4ec",
+            "text_secondary": "#b4c3b9",
             "text_disabled": "#6E6E6E",
-            "text_on_accent": "#10251D",
+            "text_on_accent": "#12281b",
             # strokes
-            "card_stroke": "#374B44",
-            "divider": "#33463F",
+            "card_stroke": "#394a40",
+            "divider": "#384940",
             "control_stroke": "#404040",
             "control_stroke_strong": "#5A5A5A",
             # accent ramp (live from themeColor)
@@ -176,17 +123,17 @@ def _build_tokens(dark: bool) -> dict:
             "accent_hover": accent_hover,
             "accent_pressed": accent_pressed,
             "accent_disabled": accent_disabled,
-            "accent_secondary": "#21493E",
-            "accent_secondary_hover": "#2D584A",
+            "accent_secondary": "#284837",
+            "accent_secondary_hover": "#345e48",
             "subtle_fill": "#2D2D2D",
             "subtle_fill_hover": "#3A3A3A",
             # chart palette
-            "chart_bg": "#1B2A27",
-            "chart_grid": "#30413C",
-            "chart_axis": "#9BB3A9",
-            "chart_title": "#ECF2EB",
-            "chart_text": "#BBCDC4",
-            # status (from FluentSystemColor pairs)
+            "chart_bg": "#202c27",
+            "chart_grid": "#36473e",
+            "chart_axis": "#a0b7a9",
+            "chart_title": "#eef4ec",
+            "chart_text": "#cad7cc",
+            # status colours
             "danger": crit_fg_pair[idx],
             "danger_bg": crit_bg_pair[idx],
             "danger_rgb": _hex_to_rgb(crit_fg_pair[idx]),
@@ -221,18 +168,18 @@ def _build_tokens(dark: bool) -> dict:
     else:
         tk = {
             "mode": "light",
-            "window_bg": "#F0F2EA",
-            "bg": "#F0F2EA",
+            "window_bg": "#f8f9f5",
+            "bg": "#f8f9f5",
             "surface": "#FFFFFF",
-            "surface_alt": "#F5F7F1",
-            "surface_hover": "#E8EEE6",
-            "surface_pressed": "#D8E4DB",
-            "text": "#182F28",
-            "text_secondary": "#52675D",
+            "surface_alt": "#f6f8f4",
+            "surface_hover": "#e8f1e7",
+            "surface_pressed": "#d8e5d8",
+            "text": "#192823",
+            "text_secondary": "#586a61",
             "text_disabled": "#A0A0A0",
             "text_on_accent": "#FFFFFF",
-            "card_stroke": "#D5DFD5",
-            "divider": "#D4DDD3",
+            "card_stroke": "#d6e1d5",
+            "divider": "#dce4db",
             "control_stroke": "#C7C7C7",
             "control_stroke_strong": "#B0B0B0",
             "accent": accent,
@@ -244,14 +191,14 @@ def _build_tokens(dark: bool) -> dict:
             "subtle_fill": "#F9F9F9",
             "subtle_fill_hover": "#EFEFEF",
             "chart_bg": "#FFFFFF",
-            "chart_grid": "#E3EAE4",
-            "chart_axis": "#62766B",
-            "chart_title": "#182F28",
-            "chart_text": "#41574D",
+            "chart_grid": "#e2e9e1",
+            "chart_axis": "#64796c",
+            "chart_title": "#192823",
+            "chart_text": "#43594d",
             "danger": crit_fg_pair[idx],
             "danger_bg": crit_bg_pair[idx],
             "danger_rgb": _hex_to_rgb(crit_fg_pair[idx]),
-            "success": "#225D41",
+            "success": "#215C49",
             "success_bg": "#E3F1E3",
             "warning": caut_fg_pair[idx],
             "warning_bg": caut_bg_pair[idx],
@@ -286,58 +233,24 @@ def _hex_to_rgb(h: str) -> str:
 
 
 # ===========================================================================
-# ThemeManager — thin adapter over qfluentwidgets
+# Application palette and appearance settings
 # ===========================================================================
 
 class ThemeManager(QObject):
-    """Holds the current theme mode and notifies listeners on change.
+    changed = Signal(str)
 
-    All real work is delegated to ``qfluentwidgets.qconfig``: this class
-    exists so existing callers (``theme_manager.set_mode/toggle/mode``,
-    ``theme_manager.tokens``, the ``changed`` signal) keep working without
-    edits.
-    """
-
-    changed = Signal(str)   # emits the new mode ("light" / "dark")
-
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
-        self._tokens_cache: dict[str, dict] = {}
-        # Bridge qfluentwidgets' theme change into our legacy signal so the
-        # chart layer (which connects to ``changed``) re-styles on switch.
-        qconfig.themeChanged.connect(self._on_qfw_theme_changed)
-
-    # -- qfluentwidgets bridge ------------------------------------------------
-    def _on_qfw_theme_changed(self, theme: Theme) -> None:
-        # Invalidate cached tokens; emit legacy mode string.
-        self._tokens_cache.pop("light", None)
-        self._tokens_cache.pop("dark", None)
-        # Update the QApplication palette so NON-Fluent widgets (plain QLabel,
-        # QToolBar text, navigation labels, QGroupBox titles) pick up readable
-        # text/background colours in dark mode. qfluentwidgets only restyles
-        # its own Fluent widget classes, leaving the app palette on light.
-        # The per-widget QSS is applied by MainWindow.refresh_theme (app-level
-        # QSS would be clobbered by qfluentwidgets' own app stylesheet).
-        self._apply_app_palette()
-        self.changed.emit("dark" if theme == Theme.DARK else "light")
+        self._mode = 'light'
+        self._tokens_cache = {}
 
     @property
     def app_qss(self) -> str:
-        """Token-driven QSS for non-Fluent Qt widgets (applied on the window).
-
-        Callers (MainWindow.refresh_theme) set this on the window widget so it
-        cascades to QToolBar/QToolButton/QLabel/QGroupBox — which the Qt style
-        engine draws directly and the app QPalette can't reach.
-        """
+        """Workspace stylesheet for the current palette."""
         return _app_qss(self.tokens)
 
     def _apply_app_palette(self) -> None:
-        """Set the QApplication palette from the current theme tokens.
-
-        Fluent widgets restyle themselves, but plain Qt widgets (QLabel,
-        QToolBar, nav-item labels) read QPalette — without this they stay
-        dark-on-dark in night mode.
-        """
+        """Supply application colours to widgets and native popups."""
         from PySide6.QtGui import QPalette
         from PySide6.QtWidgets import QApplication as _QApp
         app = _QApp.instance()
@@ -370,16 +283,16 @@ class ThemeManager(QObject):
     # -- read-only properties -------------------------------------------------
     @property
     def mode(self) -> str:
-        return "dark" if isDarkTheme() else "light"
+        return self._mode
 
     @property
     def is_dark(self) -> bool:
-        return isDarkTheme()
+        return self._mode == "dark"
 
     @property
     def tokens(self) -> dict:
-        """Current token dict (rebuilt when the Fluent theme changes)."""
-        dark = isDarkTheme()
+        """Cached colour tokens for the current appearance."""
+        dark = self.is_dark
         key = "dark" if dark else "light"
         tk = self._tokens_cache.get(key)
         if tk is None:
@@ -392,34 +305,21 @@ class ThemeManager(QObject):
 
     # -- mutation -------------------------------------------------------------
     def set_mode(self, mode: str) -> None:
-        target = Theme.DARK if mode == "dark" else Theme.LIGHT
-        if qconfig.theme == target:
-            return
-        setTheme(target, save=False, lazy=False)
+        if mode not in ('light', 'dark'):
+            raise ValueError(f'Unknown theme: {mode}')
+        if self._mode != mode:
+            self._mode = mode
+            self._apply_app_palette()
+            self.changed.emit(mode)
 
     def toggle(self) -> str:
-        new = Theme.DARK if not isDarkTheme() else Theme.LIGHT
-        setTheme(new, save=False, lazy=False)
-        return "dark" if new == Theme.DARK else "light"
+        self.set_mode('light' if self.is_dark else 'dark')
+        return self.mode
 
-    # -- application ----------------------------------------------------------
     def apply(self, app) -> None:
-        """Apply the Fluent theme to the QApplication.
-
-        qfluentwidgets owns the global stylesheet; we additionally pin the
-        theme colour to Fluent Communication Blue to match the original
-        app's identity.
-        """
-        setThemeColor(QColor(PRIMARY))
-        # qfluentwidgets installs its stylesheet lazily when widgets are
-        # created; force it now so the very first paint is correct.
-        setTheme(Theme.LIGHT, save=False, lazy=False)
-        # Set the app palette so non-Fluent widgets pick up theme colours.
+        app.setStyle('Fusion')
+        self.set_mode('light')
         self._apply_app_palette()
-        # NOTE: the QSS for non-Fluent widgets (QToolBar/QToolButton/QLabel/
-        # QGroupBox) is applied on the MainWindow widget, NOT the QApplication —
-        # qfluentwidgets owns the app-level stylesheet and would overwrite it.
-        # MainWindow picks it up via the ``changed`` signal → refresh_theme.
 
 
 theme_manager = ThemeManager()
@@ -428,7 +328,7 @@ theme_manager = ThemeManager()
 # ===========================================================================
 # Chart theming — QChart/QChartView live on a QGraphicsScene and ignore QSS,
 # so this applies the palette directly. Values come from ``theme_manager.tokens``
-# which now derives from the live Fluent theme.
+# for both appearances.
 # ===========================================================================
 
 def apply_chart_theme(chart) -> None:
@@ -500,49 +400,53 @@ def apply_chart_theme(chart) -> None:
 
 
 def _app_qss(tk: dict) -> str:
-    """Token-driven QSS for non-Fluent Qt widgets that QPalette can't reach.
-
-    QToolBar/QToolButton (toolbar action buttons), QGroupBox titles, and
-    QLabel tool-tip text are drawn by the Qt style engine, which ignores the
-    app QPalette for some roles — so they stay dark-on-dark in night mode.
-    This stylesheet forces their text colour from the live theme tokens.
-    Applied globally via ``QApplication.setStyleSheet`` on every theme switch.
-    """
+    """Styles shared by the workspace and its controls."""
     return (
+        f"QComboBox, QAbstractSpinBox, QLineEdit {{ color: {tk['text']}; background: {tk['surface']}; border: 1px solid {tk['control_stroke']}; border-radius: 5px; padding: 3px 7px; min-height: 23px; }}"
+        f"QComboBox:focus, QAbstractSpinBox:focus, QLineEdit:focus {{ border-color: {tk['accent']}; }}"
+        f"QComboBox QAbstractItemView, QMenu {{ color: {tk['text']}; background: {tk['surface']}; selection-color: {tk['text']}; selection-background-color: {tk['accent_secondary']}; }}"
+        f"QPushButton {{ color: {tk['text']}; background: {tk['surface']}; border: 1px solid {tk['divider']}; border-radius: 5px; padding: 5px 12px; }}"
+        f"QPushButton:hover {{ background: {tk['surface_hover']}; border-color: {tk['accent']}; }}"
+        f"QPushButton#primaryButton {{ background: {tk['accent']}; border-color: {tk['accent']}; color: {tk['text_on_accent']}; font-weight: bold; }}"
+        f"QPushButton:disabled, QPushButton#primaryButton:disabled, QComboBox:disabled {{ background: {tk['surface_alt']}; color: {tk['text_disabled']}; border-color: {tk['divider']}; }}"
+        f"QPushButton#formatButton {{ text-align: left; padding: 11px 16px; font: 14px 'Segoe UI'; background: {tk['surface_alt']}; }}"
+        f"QPushButton#formatButton:hover, QPushButton#formatButton:focus {{ background: {tk['accent_secondary']}; border-color: {tk['accent']}; }}"
         f"QWidget#workbench {{ background: {tk['window_bg']}; }}"
-        "QFrame#rail { background: #123A34; border: none; }"
-        "QLabel#brandName { color: #F3F7EC; font: bold 24px 'Segoe UI'; }"
-        "QLabel#brandTag, QLabel#railCaption { color: #ABC6B9; font: bold 11px 'Consolas'; }"
-        "QLabel#railCaption { padding: 15px 10px 5px; }"
-        "QLabel#navTitle { color: #E3EEE7; font: 14px 'Segoe UI'; }"
-        "QLabel#navIndex { color: #ACC5B7; font: 11px 'Consolas'; }"
-        "QToolButton#viewLink { color: #D8E8DE; text-align: left; padding: 3px 10px; font: 14px 'Segoe UI'; border-radius: 5px; }"
-        "QToolButton#viewLink:hover, QToolButton#railSettings:hover { background: #245047; }"
-        "QToolButton#viewLink:checked { color: #F5FFEA; background: #315D50; border-left: 3px solid #D7F28A; padding-left: 7px; font-weight: bold; }"
-        "QToolButton#railSettings { color: #DBECE0; background: #1C453D; border: 1px solid #507166; border-radius: 5px; }"
-        "QToolButton#viewLink:focus, QToolButton#railSettings:focus { border: 1px solid #D7F28A; }"
+        "QFrame#rail { background: #182137; border: none; }"
+        "QLabel#brandName { color: #F5F7FE; font: bold 24px 'Segoe UI'; }"
+        "QLabel#brandTag, QLabel#railCaption { color: #AAB8D0; font: bold 11px 'Segoe UI'; }"
+        "QLabel#railCaption { padding: 8px 10px 3px; }"
+
+
+        "QPushButton#viewLink { color: #E3E9F6; background: transparent; border: none; text-align: left; padding: 3px 12px; font: 14px 'Segoe UI'; border-radius: 5px; }"
+        "QPushButton#viewLink:hover { background: #293652; }"
+        "QPushButton#viewLink:checked { color: #F5FFEA; background: #35456A; border-left: 3px solid #ABBFFF; padding-left: 9px; font-weight: bold; }"
+        "QPushButton#viewLink:focus { border: 1px solid #ABBFFF; }"
         f"QToolBar {{ background: {tk['surface']}; border: 1px solid {tk['divider']}; border-radius: 6px; spacing: 2px; padding: 3px; }}"
         f"QWidget#topBar {{ background: {tk['surface']}; border-bottom: 1px solid {tk['divider']}; }}"
-        f"QWidget#ctrlPanel, QScrollArea#analysisScroll {{ background: {tk['window_bg']}; border: none; }}"
+        "QWidget#ctrlPanel, QScrollArea#analysisScroll { background: #202B43; border: none; border-radius: 7px; }"
+        "QWidget#ctrlPanel QLabel { color: #D3DDF2; }"
+        "QWidget#ctrlPanel QToolButton { color: #E8ECFF; background: #34425E; }"
+        "QWidget#ctrlPanel QToolButton:checked { color: #182137; background: #BBC8FF; }"
+        f"QScrollArea#analysisScroll QScrollBar:vertical {{ background: transparent; width: 6px; margin: 0; }}"
+        f"QScrollArea#analysisScroll QScrollBar::handle:vertical {{ background: {tk['control_stroke']}; border-radius: 3px; min-height: 24px; }}"
+        "QScrollArea#analysisScroll QScrollBar::add-line:vertical, QScrollArea#analysisScroll QScrollBar::sub-line:vertical { height: 0; }"
+        "QScrollArea#analysisScroll QScrollBar::add-page:vertical, QScrollArea#analysisScroll QScrollBar::sub-page:vertical { background: transparent; }"
         f"QLabel#pendingChart {{ color: {tk['text_secondary']}; background: {tk['chart_bg']}; font-size: 12pt; border-radius: 10px; padding: 20px; }}"
         f"QLabel#workspaceTitle {{ color: {tk['text']}; font: bold 27px 'Segoe UI'; }}"
-        f"QLabel#caption, QLabel#formatKey {{ color: {tk['text_secondary']}; font: bold 11px 'Consolas'; }}"
-        f"QLabel#formatKey {{ border-top: 1px solid {tk['divider']}; padding-top: 12px; }}"
+        f"QLabel#caption {{ color: {tk['text_secondary']}; font: bold 11px 'Segoe UI'; }}"
         f"QFrame#channelPanel {{ background: {tk['chart_bg']}; border: 1px solid {tk['divider']}; border-radius: 6px; }}"
-        f"QLabel#channelCode {{ color: {tk['pill_text']}; background: {tk['pill_bg']}; border-radius: 3px; font: bold 11px 'Consolas'; padding: 1px 5px; }}"
+        f"QLabel#channelCode {{ color: {tk['pill_text']}; background: {tk['pill_bg']}; border-radius: 3px; font: bold 11px 'Segoe UI'; padding: 1px 5px; }}"
         f"QLabel#channelName {{ color: {tk['text']}; font: bold 13px 'Segoe UI'; }}"
         f"QLabel#sectionHeading {{ color: {tk['text_secondary']}; font-size: 8pt; font-weight: 600; padding: 8px 0; }}"
         f"QLabel#secondaryText {{ color: {tk['text_secondary']}; line-height: 1.5; }}"
         f"QWidget#emptyState {{ background: {tk['surface']}; border: 1px solid {tk['divider']}; border-radius: 7px; }}"
-        f"QLabel#emptyEyebrow {{ color: {tk['pill_text']}; font-size: 9pt; font-weight: 700; }}"
         f"QLabel#emptyTitle {{ font: bold 33px 'Segoe UI'; }}"
-        f"QToolButton#importButton, QToolButton#emptyImportButton {{"
+        f"QToolButton#importButton {{"
         f" color: {tk['pill_text']}; background: {tk['pill_bg']};"
         f" border: 1px solid {tk['control_stroke']}; border-radius: 6px; padding: 6px 16px 6px 8px; }}"
-        f"QToolButton#importButton:hover, QToolButton#emptyImportButton:hover {{"
+        f"QToolButton#importButton:hover {{"
         f" background: {tk['accent_secondary_hover']}; border-color: {tk['accent']}; }}"
-        "QToolButton#emptyImportButton { color: #173C31; background: #D7F28A; border-color: #B1D76E; font-weight: bold; padding: 8px 20px 8px 12px; }"
-        "QToolButton#emptyImportButton:hover { background: #C5E77A; }"
         f"QWidget#InfoCard {{ background: {tk['surface']}; border: 1px solid {tk['card_stroke']}; border-radius: 10px; }}"
         f"QToolButton, QToolBar QToolButton {{"
         f"  color: {tk['text']}; background: transparent; border: none;"
@@ -587,10 +491,7 @@ def chart_tooltip_style() -> str:
 
 
 # ===========================================================================
-# Legacy inline-style shims — kept so existing imports in sidebar.py /
-# main_window.py don't break during the staged migration. The Fluent widget
-# migration removes these callers; these functions will be deleted once
-# nothing references them. They read the same token dict as before.
+# Per-recording styles
 # ===========================================================================
 
 def card_title_style(color: str) -> str:
@@ -644,46 +545,3 @@ def status_pill_style(text: str = "") -> str:
         f"font-size: {FONT_SM}pt; }}"
     )
     return base
-
-
-# ===========================================================================
-# Legacy SVG icon shim — replaced by FluentIcon.VIEW / FluentIcon.HIDE in the
-# sidebar. Kept temporarily for import compatibility.
-# ===========================================================================
-
-def svg_icon(name: str, color: str | None = None, size: int = 20):
-    """Return a FluentIcon-based QIcon for 'eye_open'/'eye_closed'.
-
-    Other names return an empty icon. New code should use FluentIcon directly.
-    """
-    from PySide6.QtGui import QIcon
-    from qfluentwidgets import FluentIcon as FI
-    mapping = {"eye_open": FI.VIEW, "eye_closed": FI.HIDE}
-    fi = mapping.get(name)
-    if fi is None:
-        return QIcon()
-    return fi.icon()
-
-
-# ===========================================================================
-# GlowBackground shim — the real implementation painted ambient glow blobs
-# behind the (now-removed) glassmorphism layer. qfluentwidgets' Mica/Acrylic
-# background replaces it. We keep a no-op placeholder so MainWindow can be
-# migrated in stages without breaking the import.
-# ===========================================================================
-
-class GlowBackground(QWidget):
-    """Deprecated no-op. qfluentwidgets owns the window background now.
-
-    Instances paint nothing; kept only so ``from theme import GlowBackground``
-    continues to work during the staged migration. Will be removed once
-    main_window.py stops referencing it.
-    """
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self.setEnabled(False)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-
-    def refresh_theme(self) -> None:  # no-op
-        pass

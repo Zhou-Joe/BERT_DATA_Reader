@@ -54,12 +54,17 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(self.window._processing_state, 'ready')
         self.assertEqual(canvas._last_data.shape[0], 600)
 
-    def test_legacy_sensorconnect_picker_uses_explicit_512_batch_mode(self):
-        paths = ['lap1.sup', 'lap2.sup', 'lap3.sup']
-        with patch('main_window.QFileDialog.getOpenFileNames', return_value=(paths, '')), \
-             patch.object(self.window, '_start_import') as start:
-            self.window.open_legacy_sensorconnect_data()
-        start.assert_called_once_with(paths, raw='sensorconnect_sup')
+    def test_three_direct_import_buttons_dispatch_to_their_readers(self):
+        buttons = self.window._import_buttons
+        self.assertEqual([b.text() for b in buttons], [
+            'Raw DAQ recording', 'Acceleration recording / SUP', 'SensorConnect CSV'])
+        for button, mode in zip(buttons, [True, False, 'sensorconnect']):
+            with self.subTest(label=button.text()), \
+                 patch('main_window.QFileDialog.getOpenFileNames', return_value=(['lap1'], '')), \
+                 patch.object(self.window, '_start_import') as start:
+                self.assertTrue(button.isVisible())
+                button.click()
+                start.assert_called_once_with(['lap1'], raw=mode)
 
     def test_calculations_run_on_worker_and_chart_mutations_on_gui(self):
         self.load()
@@ -135,6 +140,22 @@ class ProcessingTests(unittest.TestCase):
                          allowance_at_t0('x', 'Upper Body', 'E-Stop', 55))
         self.assertTrue(self.window._page_is_current())
 
+    def test_limit_edits_reuse_measurements_and_refresh_visible_and_hidden_limits(self):
+        self.load()
+        self.render_page(1)
+        self.refresh()
+        original = self.window._prepared
+        with patch('processing_controller.prepare_analysis', wraps=prepare_analysis) as prepare:
+            self.window.height_input.setValue(55)
+            self.window.select_cond.setCurrentText('E-Stop')
+            self.assertFalse(self.window._page_is_current())
+            self.wait_for_idle()
+            self.assertIs(self.window._prepared, original)
+            self.assertEqual(self.window.canvasASTMSust._last_height, 55)
+            self.render_page(2)
+            self.assertEqual(self.window.canvasASTMEgg._last_cond, 'E-Stop')
+            prepare.assert_not_called()
+
     def test_cutoff_failure_never_applies_partially_filtered_snapshots(self):
         data = self.load()
         self.render_page(3)
@@ -188,7 +209,7 @@ class ProcessingTests(unittest.TestCase):
         dialog = ExportDialog(self.window, data)
         dialog._filename.setText('export')
         dialog._export_type.setCurrentText('Filtered Clean Data')
-        with patch('dialogs.qfw.InfoBar.warning') as warning, \
+        with patch('dialogs.warning') as warning, \
              patch('dialogs.QFileDialog.getSaveFileName') as save:
             dialog._on_ok()
         warning.assert_called_once()
@@ -233,7 +254,7 @@ class ProcessingTests(unittest.TestCase):
         self.assertEqual(self.window._processing_state, 'error')
         self.assertIn('bad header', self.window.statusBar().currentMessage())
         self.assertFalse(self.window.datalist)
-        self.assertTrue(self.window.sidebar._import_button.isEnabled())
+        self.assertTrue(all(b.isEnabled() for b in self.window._import_buttons))
 
     def test_gui_timer_runs_while_preparation_is_in_progress(self):
         self.load()

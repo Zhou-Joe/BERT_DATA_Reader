@@ -8,7 +8,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QPoint, Qt, QEventLoop, QTimer
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton, QToolButton
 
 from accdata import AccData
 from dialogs import TruncateTimeDialog
@@ -30,7 +30,6 @@ class GuiTests(unittest.TestCase):
     def setUp(self):
         theme_manager.set_mode('light')
         self.window = MainWindow()
-        self.window.stackedWidget.setAnimationEnabled(False)
         self.window._refresh_timer.setInterval(20)
         self.window.show()
         self.app.processEvents()
@@ -357,13 +356,16 @@ class GuiTests(unittest.TestCase):
         self.load('one.sup')
         self.load('two.sup')
         self.window.select_data.setCurrentText('two.sup')
-        self.window.sidebar._cards[1]._more.menu().actions()[-1].trigger()
+        self.window._library_toggle.click()
+        remove = next(button for button in self.window._recording_tools.findChildren(QPushButton)
+                      if button.text() == 'Remove')
+        self.assertTrue(remove.isVisible())
+        remove.click()
         self.assertEqual(self.window.select_data.currentText(), 'one.sup')
         self.assertEqual(self.window.sidebar._selected_name, 'one.sup')
         self.assertEqual(len(self.window.sidebar._cards), 1)
 
-    def test_long_filename_and_footer_fit_laptop_window(self):
-        from PySide6.QtWidgets import QPushButton
+    def test_long_filename_and_recording_tools_fit_laptop_window(self):
         name = 'long-recording-name-with-multiple-test-identifiers-and-versions.sup'
         self.load(name)
         self.window.resize(1100, 720)
@@ -372,11 +374,13 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(row._title_label.toolTip(), name)
         self.assertLessEqual(row._title_label.fontMetrics().horizontalAdvance(
             row._title_label.text()), row._title_label.width())
-        export = self.window.sidebar._actions_host.findChild(QPushButton)
-        position = export.mapTo(self.window, QPoint(0, 0))
-        self.assertTrue(export.isVisible())
-        self.assertLessEqual(position.y() + export.height(),
-                             self.window.statusBar().geometry().top())
+        buttons = self.window._recording_tools.findChildren(QPushButton)
+        self.assertEqual({b.text() for b in buttons}, {
+            'Export recording', 'Trim / split', 'Edit axis values', 'Edit orientation',
+            'Trace colour', 'Remove'})
+        for button in buttons:
+            center = button.mapTo(self.window, button.rect().center())
+            self.assertIs(self.window.childAt(center), button)
 
     def test_clear_resets_cards_selection_visibility_and_empty_state(self):
         self.load()
@@ -405,27 +409,35 @@ class GuiTests(unittest.TestCase):
                     self.assertLessEqual(top_left.x() + widget.width(), bar.width())
 
     def test_rail_navigation_and_settings_keep_the_current_view(self):
-        from PySide6.QtWidgets import QToolButton
         self.window._nav_buttons[3].click()
         self.assertEqual(self.window._view_heading.text(), 'GB Contour')
-        settings = self.window.findChild(QToolButton, 'railSettings')
-        settings.click()
         self.assertTrue(self.window.select_cond.isVisible())
-        settings.click()
+        self.assertTrue(all(button.isVisible() for button in self.window._nav_buttons))
         self.assertEqual(self.window.stackedWidget.currentIndex(), 3)
         self.assertTrue(self.window._nav_buttons[3].isChecked())
         self.window.stackedWidget.setCurrentIndex(6)
         self.assertTrue(self.window._nav_buttons[6].isChecked())
 
-    def test_time_shift_disclosure_and_library_preference(self):
+    def test_trend_tools_stay_visible_and_peak_actions_require_two_recordings(self):
+        self.window.resize(1100, 720)
         self.assertFalse(self.window._library_host.isVisible())
         self.load('one.sup')
         self.assertTrue(self.window._library_host.isVisible())
-        self.assertFalse(self.window._shift_tools.isVisible())
-        self.window._shift_disclosure.trigger()
+        self.assertTrue(all(not a.isEnabled() for a in self.window._peak_actions))
         self.assertTrue(self.window._shift_spin.isVisible())
-        self.window._library_toggle.click()
         self.load('two.sup')
+        self.window.sidebar.resize_width(self.window.sidebar.MAX_WIDTH)
+        self.app.processEvents()
+        self.assertEqual([a.text() for a in self.window._peak_actions],
+                         ['Max X', 'Max Y', 'Max Z', 'Min X', 'Min Y', 'Min Z'])
+        for action in self.window._peak_actions:
+            button = self.window._trend_tools.widgetForAction(action)
+            self.assertTrue(button.isEnabled() and button.isVisible())
+        for bar in (self.window._trend_tools, self.window._shift_tools):
+            self.assertFalse(bar.findChild(QToolButton, 'qt_toolbar_ext_button').isVisible())
+        self.assertTrue(self.window._shift_reset.isVisible())
+        self.window._library_toggle.click()
+        self.load('three.sup')
         self.assertFalse(self.window._library_host.isVisible())
 
     def test_cutoff_changes_are_coalesced(self):

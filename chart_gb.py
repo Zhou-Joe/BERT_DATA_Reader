@@ -23,6 +23,7 @@ from chart_base import BaseChartView, PanChartView, INTERACTION_ZOOM, INTERACTIO
 from chart_utils import (
     numpy_to_qpointsf,
     create_line_series,
+    add_trajectory,
     add_series_with_axes,
     clear_chart,
     equalize_xy_axes,
@@ -305,13 +306,8 @@ class GBChartView(QWidget):
         # Combined chart — scatter overlay
         z_arr = data.iloc[:, 3].values
         y_arr = data.iloc[:, 2].values
-        s = create_line_series(z_arr, y_arr, color=comb_color,
-                                name="Measured Data",
-                                width=LINE_WIDTH_FITTING,
-                                points_visible=True)
-        self._chart_comb.addSeries(s)
-        s.attachAxis(self._ax_comb_x)
-        s.attachAxis(self._ax_comb_y)
+        s = add_trajectory(self._chart_comb, self._ax_comb_x, self._ax_comb_y,
+                           z_arr, y_arr, comb_color, "Measured Data", LINE_WIDTH_FITTING)
         self._data_series.append(s)
         s.clicked.connect(lambda pt: self._on_click_comb(pt))
 
@@ -356,6 +352,7 @@ class GBChartView(QWidget):
         for s in self._data_series:
             try:
                 s.chart().removeSeries(s)
+                s.deleteLater()
             except Exception:
                 pass
         self._data_series.clear()
@@ -495,8 +492,7 @@ class GBChartView(QWidget):
         marker.setMarkerSize(14)
         marker.setColor(color)
         marker.setBorderColor(QColor("white"))
-        for x, y in pts:
-            marker.append(QPointF(float(x), float(y)))
+        marker.replaceNp(np.ascontiguousarray(pts[:, 0]), np.ascontiguousarray(pts[:, 1]))
         self._chart_comb.addSeries(marker)
         marker.attachAxis(self._ax_comb_x)
         marker.attachAxis(self._ax_comb_y)

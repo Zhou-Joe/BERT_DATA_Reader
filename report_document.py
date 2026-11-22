@@ -130,7 +130,8 @@ class AccelerationReport:
         foot._p.append(_element("fldSimple", instr=" PAGE "))
 
     def add_record(self, data, name, verdicts, img_dir, mods, sections, *,
-                   plot_type, cutoff, restraint, condition, height, prone):
+                   plot_type, cutoff, restraint, condition, height, prone,
+                   z_source="Standard", xy_source="Standard", deadband=0.05):
         doc = self.doc
         selected = [key for key in MODULES if mods.get(key)]
         self.record_number += 1
@@ -151,7 +152,7 @@ class AccelerationReport:
             doc.add_paragraph(f"Plot data: {source}.   Filter setting: {cutoff:g} Hz.",
                               "Report note")
         elif any(k in selected for k in ("zr", "xr")):
-            doc.add_paragraph(f"Reversal data: Calibrated.   Filter setting: {cutoff:g} Hz.",
+            doc.add_paragraph(f"Filter setting: {cutoff:g} Hz.",
                               "Report note")
         if any(k in selected for k in ("sust", "egg", "xr")):
             doc.add_paragraph(f"Restraint: {restraint}.   Condition: {condition}.   "
@@ -188,9 +189,11 @@ class AccelerationReport:
                 if key == "acczone":
                     caption = "1 Hz filtered and zero-adjusted"
                 elif key in ("zr", "xr"):
+                    source = z_source if key == "zr" else xy_source
+                    signal = {"Standard": f"{cutoff:g} Hz filtered and zero-adjusted",
+                              "Filter": f"{cutoff:g} Hz filtered", "Raw": "Raw data"}[source]
                     caption = " · ".join(s for s in (
-                        caption, f"{cutoff:g} Hz filtered and zero-adjusted",
-                        "0.05 g deadband" if key == "xr" else None) if s)
+                        caption, signal, f"{deadband:g} g deadband" if key == "xr" else None) if s)
                 self._figure(MODULES[key], caption, Path(img_dir) / filename, legend)
 
     def _figure(self, module, caption, path, legend):

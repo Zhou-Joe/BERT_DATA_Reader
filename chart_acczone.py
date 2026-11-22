@@ -18,7 +18,7 @@ from PySide6.QtGui import QColor, QPen, QFont, QCursor
 from PySide6.QtWidgets import QWidget, QLabel
 
 from chart_base import BaseChartView, INTERACTION_ZOOM, INTERACTION_PAN, INTERACTION_DEFAULT
-from chart_utils import create_line_series, clear_chart, reset_chart_view
+from chart_utils import add_trajectory, clear_chart, reset_chart_view
 from theme import LINE_WIDTH_DEFAULT, chart_tooltip_style
 
 
@@ -433,6 +433,7 @@ class AccZoneChartView(BaseChartView):
         if self._data_line is not None:
             try:
                 self.chart().removeSeries(self._data_line)
+                self._data_line.deleteLater()
             except Exception:
                 pass
 
@@ -445,13 +446,8 @@ class AccZoneChartView(BaseChartView):
         # detected fs (the old behaviour hardcoded 0.002 s = 1/500).
         self._last_fs = getattr(data, "fs", None) or self._last_fs
 
-        self._data_line = create_line_series(
-            x_arr, z_arr, color=measured, name="Measured Data",
-            width=LINE_WIDTH_DEFAULT, points_visible=True,
-        )
-        self.chart().addSeries(self._data_line)
-        self._data_line.attachAxis(self._axis_x)
-        self._data_line.attachAxis(self._axis_y)
+        self._data_line = add_trajectory(self.chart(), self._axis_x, self._axis_y,
+                                         x_arr, z_arr, measured, "Measured Data", LINE_WIDTH_DEFAULT)
 
         # Click annotation
         self._data_line.clicked.connect(self._on_data_clicked)
@@ -542,8 +538,7 @@ class AccZoneChartView(BaseChartView):
         marker.setMarkerSize(14)
         marker.setColor(QColor("#0078D4"))
         marker.setBorderColor(QColor("white"))
-        for i in np.flatnonzero(mask):
-            marker.append(QPointF(float(x_arr[i]), float(z_arr[i])))
+        marker.replaceNp(x_arr[mask], z_arr[mask])
         self.chart().addSeries(marker)
         marker.attachAxis(self._axis_x)
         marker.attachAxis(self._axis_y)

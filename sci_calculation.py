@@ -95,6 +95,36 @@ def ProcessASTM(data, dt):
 
 
 
+def sustained_peak_windows(data, widths):
+    """Yield ASTM extrema for each distinct window width, in ascending order.
+
+    The min or max of a window is the min or max of two overlapping blocks
+    covering it. Double the block width as needed, keeping only the most
+    recent level. NaNs invalidate their entire window.
+    """
+    samples = data.iloc[:, 1:4].to_numpy(dtype=float).T
+    minima = maxima = np.where(np.isfinite(samples), samples, np.nan)
+    baseline = [0., 0., 1.]
+    block = 1
+    for width in sorted(set(widths)):
+        if width < 1:
+            raise ValueError('Window width must be positive')
+        if width > len(data):
+            yield width, (baseline.copy(), baseline.copy())
+            continue
+        while block * 2 <= width:
+            minima = np.minimum(minima[:, :-block], minima[:, block:])
+            maxima = np.maximum(maxima[:, :-block], maxima[:, block:])
+            block *= 2
+        offset = width - block
+        lows = np.minimum(minima[:, :-offset], minima[:, offset:]) if offset else minima
+        highs = np.maximum(maxima[:, :-offset], maxima[:, offset:]) if offset else maxima
+        positive = np.maximum(np.fmax.reduce(lows, axis=1, initial=-np.inf), baseline)
+        negative = np.minimum(np.fmin.reduce(highs, axis=1, initial=np.inf), baseline)
+        yield width, ([round(float(value), 4) for value in positive],
+                      [round(float(value), 4) for value in negative])
+
+
 def ProcessGB(data, dt):
     """GB uses the same sustained extrema as ASTM for the Y/Z axes."""
     pos, neg = ProcessASTM(data, dt)

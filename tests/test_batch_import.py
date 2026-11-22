@@ -93,7 +93,7 @@ class BatchGuiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             paths = [write_sup(Path(folder) / 'one.sup'), Path(folder) / 'bad.sup',
                      write_sup(Path(folder) / 'two.sup')]
-            with patch('qfluentwidgets.InfoBar.warning') as warning, \
+            with patch('ui_controls.warning') as warning, \
                  patch('processing_controller.prepare_analysis', wraps=prepare_analysis) as prepare:
                 self.window._start_import(paths, raw=False)
                 self.wait_for_idle()
@@ -132,14 +132,14 @@ class BatchGuiTests(unittest.TestCase):
 
     def test_all_failed_batch_leaves_existing_workspace_unchanged(self):
         existing = self.load()
-        with tempfile.TemporaryDirectory() as folder, patch('qfluentwidgets.InfoBar.warning') as warning:
+        with tempfile.TemporaryDirectory() as folder, patch('ui_controls.warning') as warning:
             self.window._start_import([Path(folder) / 'a.sup', Path(folder) / 'b.sup'], raw=False)
             self.wait_for_idle()
         self.assertEqual(self.window.datalist, [existing])
         self.assertEqual(len(self.window._last_import_summary['errors']), 2)
         self.assertIn('Imported 0/2 files', self.window.statusBar().currentMessage())
         warning.assert_called_once()
-        self.assertTrue(self.window.sidebar._import_button.isEnabled())
+        self.assertTrue(all(b.isEnabled() for b in self.window._import_buttons))
 
     def test_cancel_during_gui_commit_keeps_only_completed_files(self):
         self.load('existing.sup')

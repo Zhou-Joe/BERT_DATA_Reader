@@ -10,7 +10,7 @@ from matplotlib.path import Path
 
 from accdata import AccData, RawData, SensorConnectData
 from background import Cancelled
-from sci_calculation import (ProcessASTM, detect_z_acceleration_reversal,
+from sci_calculation import (sustained_peak_windows, detect_z_acceleration_reversal,
                              detect_xy_acceleration_reversal, sampling_frequency)
 
 ASTM_DURATIONS = (.01, .02, .05, .1, .2, .3, .4, .5, 1, 2, 4, 5, 6, 7, 8, 9, 14)
@@ -73,11 +73,13 @@ def prepare_analysis(request, token, progress):
     frame = getattr(selected, FRAME_ATTR[request.plot_type])
     fs = sampling_frequency(frame)
     durations = sorted(set(ASTM_DURATIONS + GB_DURATIONS))
-    sustained = {}
-    for index, duration in enumerate(durations):
+    widths = {duration: max(1, round(fs * duration)) for duration in durations}
+    peaks = {}
+    for index, (width, extrema) in enumerate(sustained_peak_windows(frame, widths.values())):
         token.check()
-        sustained[duration] = ProcessASTM(frame, max(1, round(fs * duration)))
+        peaks[width] = extrema
         progress(25 + int(40 * (index + 1) / len(durations)), 'Calculating sustained acceleration')
+    sustained = {duration: peaks[width] for duration, width in widths.items()}
     gb = {duration: (sustained[duration][0][1:], sustained[duration][1][1:])
           for duration in GB_DURATIONS}
     token.check()

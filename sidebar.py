@@ -7,10 +7,10 @@ from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton,
-    QToolButton, QLineEdit, QScrollArea, QFrame, QMenu, QSplitter,
+    QToolButton, QLineEdit, QScrollArea, QFrame, QSplitter,
     QSizePolicy, QColorDialog,
 )
-from qfluentwidgets import FluentIcon as FI, TransparentToolButton
+from ui_controls import icon
 from theme import DATASET_COLORS, theme_manager
 
 
@@ -77,7 +77,7 @@ class InfoCard(QWidget):
         self._meta.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         text.addWidget(self._meta)
         layout.addLayout(text, 1)
-        self._plot_check = TransparentToolButton()
+        self._plot_check = QToolButton()
         self._plot_check.setFixedSize(30, 30)
         self._plot_check.setIconSize(QSize(17, 17))
         self._plot_check.setCheckable(True)
@@ -86,33 +86,11 @@ class InfoCard(QWidget):
         self._plot_check.setAccessibleName(f'Show {display_name} on Trend')
         self._plot_check.toggled.connect(self._on_plot_toggled)
         layout.addWidget(self._plot_check)
-        self._more = QToolButton()
-        self._more.setText('...')
-        self._more.setFixedSize(26, 30)
-        self._more.setToolTip('Recording actions')
-        self._more.setAccessibleName(f'Actions for {display_name}')
-        self._more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._more.setMenu(self.action_menu(self._more))
-        self._more.setStyleSheet('QToolButton::menu-indicator { image: none; }')
-        layout.addWidget(self._more)
         self.refresh_theme()
 
-    def action_menu(self, parent):
-        menu = QMenu(parent)
-        for label, callback in [
-            ('Trim / split recording', self._popup_truncate),
-            ('Edit orientation', self._popup_angle),
-            ('Edit axis values', self._popup_edit),
-            ('Change trace colour', self._pick_color),
-            ('Export recording', self._popup_export),
-        ]:
-            menu.addAction(label, callback)
-        menu.addSeparator()
-        menu.addAction('Remove from workspace',
-                       lambda: self._remove_callback(False))
-        return menu
-
     def set_selected(self, selected):
+        if self._selected == selected:
+            return
         self._selected = selected
         self.refresh_theme()
 
@@ -146,7 +124,7 @@ class InfoCard(QWidget):
             f'QToolButton {{ background: {self._color}; border: 1px solid {tk["card_stroke"]};'
             ' border-radius: 5px; }'
             f'QToolButton:hover, QToolButton:focus {{ border: 2px solid {tk["text"]}; }}')
-        self._plot_check.setIcon(FI.VIEW if self._plot_check.isChecked() else FI.HIDE)
+        self._plot_check.setIcon(icon('eye' if self._plot_check.isChecked() else 'eye-slash'))
         self._title_label._update_text()
 
     def apply_color(self, color):
@@ -156,7 +134,7 @@ class InfoCard(QWidget):
             self.selected.emit(self._data.filename)
 
     def _on_plot_toggled(self, checked):
-        self._plot_check.setIcon(FI.VIEW if checked else FI.HIDE)
+        self._plot_check.setIcon(icon('eye' if checked else 'eye-slash'))
         self._mainui.set_dataset_visible(self._data.filename, checked)
 
     def _pick_color(self) -> None:
@@ -308,11 +286,6 @@ class DataSidebar(QWidget):
         self._count.setObjectName('libraryCount')
         heading.addWidget(self._count)
         heading.addStretch()
-        self._import_button = parent._import_button('Add')
-        heading.addWidget(self._import_button)
-        kicker = QLabel('SOURCE LIBRARY')
-        kicker.setObjectName('caption')
-        body_layout.addWidget(kicker)
         body_layout.addLayout(heading)
         self._search = QLineEdit()
         self._search.setObjectName('recordingSearch')
@@ -361,10 +334,6 @@ class DataSidebar(QWidget):
         self._splitter.setSizes([175, 290])
         self._inspector_scroll.hide()
         body_layout.addWidget(self._splitter, 1)
-        self._actions_host = QWidget()
-        self._actions_layout = QVBoxLayout(self._actions_host)
-        self._actions_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.addWidget(self._actions_host)
         outer.addWidget(body, 1)
         self.refresh_theme()
 
@@ -388,11 +357,7 @@ class DataSidebar(QWidget):
             f'QScrollBar:vertical {{ background: transparent; width: 7px; margin: 0; }}'
             f'QScrollBar::handle:vertical {{ background: {tk["control_stroke"]}; border-radius: 3px; min-height: 24px; }}'
             'QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }'
-            'QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }'
-            f'QMenu {{ background: {tk["surface"]}; color: {tk["text"]};'
-            f' border: 1px solid {tk["card_stroke"]}; padding: 6px; }}'
-            f'QMenu::item {{ padding: 8px 16px; border-radius: 4px; }}'
-            f'QMenu::item:selected {{ background: {tk["surface_hover"]}; }}')
+            'QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }')
         for row in self._cards:
             row.refresh_theme()
         self._render_inspector()
@@ -432,10 +397,40 @@ class DataSidebar(QWidget):
                                  'Imported recordings appear here.')
         self._empty_hint.setVisible(visible == 0)
 
+    def _selected_row(self):
+        return next((row for row in self._cards if row._data.filename == self._selected_name), None)
+
+    def create_recording_tools(self):
+        tools = QWidget()
+        layout = QHBoxLayout(tools)
+        layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel('RECORDING TOOLS')
+        label.setObjectName('caption')
+        layout.addWidget(label)
+
+        def run(callback):
+            row = self._selected_row()
+            if row is not None:
+                callback(row)
+
+        for text, callback in [
+            ('Trim / split', InfoCard._popup_truncate),
+            ('Edit orientation', InfoCard._popup_angle),
+            ('Edit axis values', InfoCard._popup_edit),
+            ('Trace colour', InfoCard._pick_color),
+            ('Export recording', InfoCard._popup_export),
+            ('Remove', lambda row: row._remove_callback(False)),
+        ]:
+            button = QPushButton(text)
+            button.setToolTip(f'{text} for the selected recording')
+            button.clicked.connect(lambda checked=False, cb=callback: run(cb))
+            layout.addWidget(button)
+        layout.addStretch()
+        return tools
+
     def _render_inspector(self):
-        row = next((item for item in self._cards if item._data.filename == self._selected_name), None)
+        row = self._selected_row()
         self._inspector_scroll.setVisible(row is not None)
-        self._actions_host.setVisible(row is not None)
         frame = None if row is None else getattr(row._data, {
             'Standard': 'std_data', 'Filter': 'filtered_data', 'Raw': 'data'}[self._plottype])
         key = None if row is None else (id(row._data), id(frame), self._plottype,
@@ -446,12 +441,11 @@ class DataSidebar(QWidget):
         self._inspector_key = key
         self._inspector_frame = frame
         self._inspector_values = {}
-        for host_layout in (self._inspector_layout, self._actions_layout):
-            while host_layout.count():
-                item = host_layout.takeAt(0)
-                if item.widget():
-                    item.widget().hide()
-                    item.widget().deleteLater()
+        while self._inspector_layout.count():
+            item = self._inspector_layout.takeAt(0)
+            if item.widget():
+                item.widget().hide()
+                item.widget().deleteLater()
         if row is None:
             return
         data = row._data
@@ -524,30 +518,6 @@ class DataSidebar(QWidget):
                              f'Roll {data.roll_angle:g}°  /  Yaw {data.yaw_angle:g}°')
         orientation.setStyleSheet(f'color: {tk["text_secondary"]}; font-size: 9pt;')
         layout.addWidget(orientation)
-        buttons = QWidget()
-        actions = QHBoxLayout(buttons)
-        actions.setContentsMargins(0, 4, 0, 0)
-        export = QPushButton('Export recording')
-        export.setFixedHeight(32)
-        export.setCursor(Qt.CursorShape.PointingHandCursor)
-        export.setStyleSheet(
-            f'QPushButton {{ color: {tk["text_on_accent"]}; background: {tk["accent"]};'
-            f' border: none; border-radius: 5px; padding: 4px 12px; }}'
-            f'QPushButton:hover {{ background: {tk["accent_hover"]}; }}')
-        export.clicked.connect(row._popup_export)
-        actions.addWidget(export, 1)
-        trim = QPushButton('Trim / split')
-        trim.setFixedHeight(32)
-        trim.setToolTip('Review time intervals or detect test segments')
-        trim.clicked.connect(row._popup_truncate)
-        actions.addWidget(trim)
-        edit = QToolButton()
-        edit.setText('Edit')
-        edit.setFixedHeight(32)
-        edit.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        edit.setMenu(row.action_menu(edit))
-        actions.addWidget(edit)
-        self._actions_layout.addWidget(buttons)
         layout.addStretch()
 
     def set_pending_details(self, pending, message='Updating signal summary...'):

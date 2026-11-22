@@ -162,7 +162,7 @@ class _ReversalSubChart(PanChartView):
     def add_data_series(self, time_col, value_col, color: str) -> QLineSeries:
         """Add a measured-acceleration line series + cache its bounds."""
         series = create_line_series(time_col, value_col, color=color,
-                                     width=LINE_WIDTH_DEFAULT)
+                                     width=LINE_WIDTH_DEFAULT, display_lod=True)
         self._chart.addSeries(series)
         series.attachAxis(self._axis_x)
         series.attachAxis(self._axis_y)

@@ -3,12 +3,12 @@ import numpy as np
 from PySide6.QtCore import Qt, QRectF, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QWidget
-from qfluentwidgets import DoubleSpinBox
+from PySide6.QtWidgets import QDoubleSpinBox
 
 from theme import theme_manager
 
 
-class TimeField(DoubleSpinBox):
+class TimeField(QDoubleSpinBox):
     """Display readable seconds but retain the exact detected sample boundary."""
     secondsChanged = Signal(float)
 
